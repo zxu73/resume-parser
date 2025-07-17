@@ -141,6 +141,134 @@ def test_resume_upload():
             os.unlink(resume_file_path)
         return None
 
+def test_direct_resume_evaluation():
+    """Test the direct resume evaluation endpoint with resume text and job description"""
+    print("\n🎯 Testing Direct Resume Evaluation (Sequential Agent Workflow)...")
+    
+    sample_resume_text = """
+    John Doe
+    Senior Software Engineer
+    Email: john.doe@email.com
+    Phone: (555) 123-4567
+    Location: San Francisco, CA
+    
+    PROFESSIONAL SUMMARY
+    Experienced software engineer with 4 years of experience in full-stack development.
+    Skilled in Python, React, and cloud technologies. Proven track record of delivering
+    scalable web applications and leading development teams.
+    
+    WORK EXPERIENCE
+    
+    Senior Software Engineer | Tech Company | Jan 2020 - Present
+    • Developed and maintained web applications using Python, Django, and React
+    • Worked with AWS services including EC2, S3, and RDS
+    • Collaborated with cross-functional teams using Agile/Scrum methodology
+    • Implemented CI/CD pipelines using Docker and Jenkins
+    • Mentored 2 junior developers and conducted code reviews
+    • Improved application performance by 30% through optimization
+    
+    Junior Software Developer | Startup Inc | Jun 2019 - Dec 2019
+    • Built responsive frontend components using React and TypeScript
+    • Participated in daily standups and sprint planning
+    • Wrote unit tests and integration tests
+    • Assisted in database design and optimization
+    
+    EDUCATION
+    Bachelor of Science in Computer Science | University of California | 2019
+    GPA: 3.7/4.0
+    Relevant Coursework: Data Structures, Algorithms, Database Systems, Software Engineering
+    
+    TECHNICAL SKILLS
+    • Programming Languages: Python, JavaScript, TypeScript, Java, SQL
+    • Frontend: React, HTML5, CSS3, Redux, Material-UI
+    • Backend: Django, Flask, Node.js, Express.js
+    • Databases: PostgreSQL, MySQL, MongoDB
+    • Cloud: AWS (EC2, S3, RDS, Lambda), Docker, Kubernetes
+    • Tools: Git, Jenkins, JIRA, VS Code, Postman
+    
+    PROJECTS
+    E-commerce Platform (2023)
+    • Built a full-stack e-commerce application using React and Django
+    • Implemented payment integration with Stripe API
+    • Deployed on AWS with auto-scaling capabilities
+    
+    CERTIFICATIONS
+    • AWS Certified Solutions Architect - Associate (2023)
+    • Certified Scrum Master (2022)
+    """
+    
+    sample_job_description = """
+    Senior Python Developer
+    
+    We are seeking a Senior Python Developer with 5+ years of experience to join our team.
+    
+    Required Qualifications:
+    • 5+ years of Python programming experience
+    • Strong experience with Django or Flask frameworks
+    • Frontend development experience with React.js
+    • AWS cloud services experience (EC2, S3, RDS)
+    • Docker containerization experience
+    • SQL database management skills
+    • Git version control proficiency
+    • Team leadership and mentoring experience
+    
+    Preferred Qualifications:
+    • Machine learning or data science experience
+    • Kubernetes orchestration experience
+    • Microservices architecture experience
+    • DevOps and CI/CD pipeline experience
+    • Agile/Scrum methodology experience
+    • AWS certifications
+    
+    Education:
+    Bachelor's degree in Computer Science, Engineering, or related field
+    
+    Responsibilities:
+    • Lead development of scalable web applications
+    • Architect and implement backend systems
+    • Mentor junior developers and conduct code reviews
+    • Collaborate with cross-functional teams
+    • Design and implement RESTful APIs
+    • Optimize application performance and scalability
+    • Participate in technical decision-making
+    """
+    
+    payload = {
+        "resume_text": sample_resume_text,
+        "job_description": sample_job_description
+    }
+    
+    try:
+        print("   🔄 Running direct resume evaluation...")
+        print("   📝 Resume: 4 years experience, Python/React skills, AWS experience")
+        print("   💼 Job: Senior Python Developer, 5+ years required")
+        print("   🤖 Comprehensive Agent Workflow:")
+        print("      Single agent provides: Evaluation + Rating + Recommendations")
+        
+        response = requests.post(f"{BASE_URL}/evaluate-resume", json=payload)
+        
+        if response.status_code == 200:
+            result = response.json()
+            print("✅ Direct resume evaluation successful!")
+            print(f"   Workflow Type: {result.get('workflow_type', 'N/A')}")
+            
+            # Display comprehensive analysis
+            if result.get('comprehensive_analysis'):
+                print("\n   📊 COMPREHENSIVE ANALYSIS:")
+                print("   " + "="*60)
+                print(result['comprehensive_analysis'])
+                print("   " + "="*60)
+            
+            return True
+        else:
+            print(f"❌ Direct resume evaluation failed: {response.status_code}")
+            print(f"   Response: {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error testing direct resume evaluation: {e}")
+        return False
+
 def test_resume_optimization(analysis_id):
     """Test resume optimization endpoint"""
     print("\n🚀 Testing Resume Optimization...")
@@ -191,28 +319,56 @@ def main():
     if not test_server_health():
         return
     
+    # Test the main functionality: Direct resume evaluation
+    if os.getenv("GEMINI_API_KEY"):
+        print("\n🎯 Testing Main Functionality: Direct Resume Evaluation")
+        if test_direct_resume_evaluation():
+            print("✅ Direct resume evaluation test passed!")
+        else:
+            print("❌ Direct resume evaluation test failed")
+            return
+    else:
+        print("\n⚠️  Cannot test main functionality - GEMINI_API_KEY not set")
+        print("   Please set GEMINI_API_KEY environment variable to test the sequential agent workflow")
+        return
+    
+    # Test additional endpoints
+    print("\n🔧 Testing Additional Endpoints...")
+    
     # Test job description analysis
     if not test_job_description_analysis():
         print("❌ Job description analysis test failed")
         return
     
-    # Test resume upload
+    # Test resume upload workflow
     analysis_id = test_resume_upload()
-    if not analysis_id:
-        print("❌ Resume upload test failed")
-        return
-    
-    # Test resume optimization (requires GEMINI_API_KEY)
-    if os.getenv("GEMINI_API_KEY"):
-        test_resume_optimization(analysis_id)
+    if analysis_id:
+        print("✅ Resume upload test passed!")
+        
+        # Test other endpoints if API key is available
+        if os.getenv("GEMINI_API_KEY"):
+            print("\n🤖 Testing Additional AI Workflows...")
+            
+            # Test resume optimization
+            if test_resume_optimization(analysis_id):
+                print("✅ Resume optimization test passed!")
+            else:
+                print("❌ Resume optimization test failed")
     else:
-        print("\n⚠️  Skipping resume optimization test (GEMINI_API_KEY not set)")
+        print("❌ Resume upload test failed")
     
-    print("\n✅ All available tests completed!")
-    print("\n📝 To fully test the resume parser:")
-    print("   1. Make sure you have GEMINI_API_KEY set in your environment")
-    print("   2. Start the server with: adk web")
-    print("   3. Try uploading a real PDF resume through the API")
+    print("\n✅ All tests completed!")
+    print("\n📝 Summary:")
+    print("   ✅ Main Feature: Direct resume evaluation with job description")
+    print("   ✅ Users can input resume text and job description directly")
+    print("   ✅ Comprehensive agent workflow: Evaluation + Rating + Recommendations")
+    print("   ✅ No file upload required for main functionality")
+    print("\n🚀 To use the main feature:")
+    print("   1. Start server: adk web")
+    print("   2. POST to /evaluate-resume with:")
+    print("      - resume_text: Your resume content")
+    print("      - job_description: The job posting")
+    print("   3. Get comprehensive evaluation, ratings, and recommendations!")
 
 if __name__ == "__main__":
     main() 

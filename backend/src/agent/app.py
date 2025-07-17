@@ -46,6 +46,13 @@ class ResumeJobComparisonRequest(BaseModel):
     resume_analysis_id: str
     job_description: str
 
+class QuickRatingRequest(BaseModel):
+    resume_analysis_id: str
+
+class ResumeEvaluationRequest(BaseModel):
+    resume_text: str
+    job_description: str
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create the default session on startup
@@ -264,6 +271,120 @@ async def optimize_resume_with_agent(request: ResumeJobComparisonRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Resume optimization failed: {str(e)}")
+
+@app.post("/evaluate-resume")
+async def evaluate_resume_directly(request: ResumeEvaluationRequest):
+    """
+    Directly evaluate and rate a resume using the comprehensive agent.
+    Takes resume text and job description as input - no file upload required.
+    """
+    try:
+        if not request.resume_text.strip():
+            raise HTTPException(status_code=400, detail="Resume text cannot be empty")
+        
+        if not request.job_description.strip():
+            raise HTTPException(status_code=400, detail="Job description cannot be empty")
+        
+        # Create a comprehensive prompt for the agent
+        prompt = f"""
+        Please evaluate and rate this resume comprehensively:
+
+        RESUME CONTENT:
+        {request.resume_text}
+
+        JOB DESCRIPTION:
+        {request.job_description}
+
+        Instructions:
+        1. Provide a comprehensive evaluation analyzing all aspects of the resume
+        2. Consider how well the resume matches the job description requirements
+        3. Provide numerical scores (1-10) for each category with detailed justifications
+        4. Include specific recommendations for improvement
+        5. Use web search to research industry trends if helpful
+
+        Please follow your structured response format with clear sections for:
+        - EVALUATION REPORT
+        - RATING RESULTS  
+        - RECOMMENDATIONS
+        """
+        
+        # Use the agent to process the request
+        user_content = types.Content(
+            role="user", parts=[types.Part(text=prompt)]
+        )
+        
+        response_text = ""
+        async for event in runner.run_async(
+            user_id=USER_ID, session_id=SESSION_ID, new_message=user_content
+        ):
+            if event.is_final_response() and event.content:
+                response_text = event.content.parts[0].text
+        
+        return {
+            "success": True,
+            "comprehensive_analysis": response_text,
+            "workflow_type": "comprehensive_evaluation_and_rating",
+            "message": "Resume evaluation and rating completed successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Resume evaluation failed: {str(e)}")
+
+@app.post("/quick-resume-rating")
+async def quick_resume_rating(request: QuickRatingRequest):
+    """
+    Provide a quick rating of a resume using the rating agent only.
+    """
+    try:
+        # Retrieve the resume analysis
+        if request.resume_analysis_id not in resume_analyses:
+            raise HTTPException(status_code=404, detail="Resume analysis not found. Please upload a resume first.")
+        
+        resume_data = resume_analyses[request.resume_analysis_id]
+        resume_analysis = resume_data["analysis"]
+        
+        # Create a simple prompt for quick rating
+        prompt = f"""
+        Please provide a quick rating of this resume:
+
+        RESUME ANALYSIS:
+        {resume_analysis.get('analysis', '')}
+
+        Provide:
+        1. Overall score (1-10)
+        2. Key strengths (top 3)
+        3. Key weaknesses (top 3)
+        4. Quick recommendations (top 3)
+        5. Market readiness assessment
+
+        Keep the response concise but informative.
+        """
+        
+        # Use the rating agent directly for quick rating
+        user_content = types.Content(
+            role="user", parts=[types.Part(text=prompt)]
+        )
+        
+        response_text = ""
+        async for event in runner.run_async(
+            user_id=USER_ID, session_id=SESSION_ID, new_message=user_content
+        ):
+            if event.is_final_response() and event.content:
+                response_text = event.content.parts[0].text
+        
+        return {
+            "success": True,
+            "resume_filename": resume_data["filename"],
+            "quick_rating": response_text,
+            "message": "Quick resume rating completed successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Quick resume rating failed: {str(e)}")
 
 # === EXISTING ENDPOINTS (preserved) ===
 
