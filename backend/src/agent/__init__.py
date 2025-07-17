@@ -2,6 +2,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .agent import root_agent
+from .agent import evaluation_agent, rating_agent
 
-__all__ = ["root_agent"]
+__all__ = ["evaluation_agent", "rating_agent"]

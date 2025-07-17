@@ -68,8 +68,9 @@ def evaluate_resume_example():
     print("=" * 50)
     print("📝 Resume: 3 years experience, Python/JavaScript skills")
     print("💼 Job: Senior Python Developer, 5+ years required")
-    print("\n🤖 Running Comprehensive Agent Workflow...")
-    print("   Single agent provides: Evaluation + Rating + Recommendations")
+    print("\n🤖 Running Sequential Agent Workflow...")
+    print("   🔍 Step 1: Evaluation Agent - Comprehensive analysis")
+    print("   📊 Step 2: Rating Agent - Scores + Improved Resume")
     
     try:
         # Make the request
@@ -77,17 +78,52 @@ def evaluate_resume_example():
         
         if response.status_code == 200:
             result = response.json()
-            print("\n✅ Evaluation completed successfully!")
+            print("\n✅ Sequential workflow completed successfully!")
             
-            # Display the comprehensive analysis
-            print("\n" + "="*60)
-            print("📊 COMPREHENSIVE ANALYSIS")
-            print("="*60)
-            if result.get('comprehensive_analysis'):
-                print(result['comprehensive_analysis'])
+            # Get the reports
+            evaluation_report = result.get('evaluation_report', '')
+            rating_and_generation = result.get('rating_and_generation', '')
             
-            print("\n" + "="*60)
-            print("✅ Resume evaluation completed!")
+            # Show content lengths
+            print(f"\n📊 Content Summary:")
+            print(f"   📋 Evaluation Report: {len(evaluation_report)} characters")
+            print(f"   📊 Rating & Generation: {len(rating_and_generation)} characters")
+            
+            # Display evaluation report from first agent
+            if evaluation_report:
+                print("\n" + "="*80)
+                print("📋 FULL EVALUATION REPORT (Step 1 - Evaluation Agent)")
+                print("="*80)
+                print(evaluation_report)
+                print("\n" + "="*80)
+                print("📋 END OF EVALUATION REPORT")
+                print("="*80)
+            else:
+                print("\n❌ No evaluation report received from first agent")
+            
+            # Display rating and generation from second agent
+            if rating_and_generation:
+                print("\n" + "="*80)
+                print("📊 FULL RATING & IMPROVED RESUME (Step 2 - Rating Agent)")
+                print("="*80)
+                print(rating_and_generation)
+                print("\n" + "="*80)
+                print("📊 END OF RATING & IMPROVED RESUME")
+                print("="*80)
+            else:
+                print("\n❌ No rating and generation received from second agent")
+            
+            # Summary
+            print("\n" + "="*80)
+            print("✅ SEQUENTIAL WORKFLOW SUMMARY")
+            print("="*80)
+            print("🔄 Workflow Type:", result.get('workflow_type', 'Unknown'))
+            print("📝 Status:", "Success" if result.get('success') else "Failed")
+            print("💬 Message:", result.get('message', ''))
+            print("🎯 Both agents executed in sequence:")
+            print("   1️⃣ Evaluation Agent → Comprehensive analysis")
+            print("   2️⃣ Rating Agent → Used evaluation to provide scores & improved resume")
+            print("="*80)
             
         else:
             print(f"\n❌ Request failed with status code: {response.status_code}")

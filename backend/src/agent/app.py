@@ -4,7 +4,7 @@ from fastapi import FastAPI, Response, Request, File, UploadFile, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from .agent import root_agent
+from .agent import evaluation_agent, rating_agent
 from .utils import analyze_resume_file, analyze_job_description, compare_resume_to_job
 import json
 import asyncio
@@ -27,8 +27,9 @@ SESSION_ID = "default_session"
 # 1. Set up session management
 session_service = InMemorySessionService()
 
-# 2. Create a Runner for the agent
-runner = Runner(agent=root_agent, app_name=APP_NAME, session_service=session_service)
+# 2. Create separate runners for both agents
+evaluation_runner = Runner(agent=evaluation_agent, app_name=APP_NAME, session_service=session_service)
+rating_runner = Runner(agent=rating_agent, app_name=APP_NAME, session_service=session_service)
 
 # Store threads in memory for LangGraph compatibility
 threads: Dict[str, List[Dict[str, Any]]] = {}
@@ -254,7 +255,7 @@ async def optimize_resume_with_agent(request: ResumeJobComparisonRequest):
         )
         
         response_text = ""
-        async for event in runner.run_async(
+        async for event in evaluation_runner.run_async(
             user_id=USER_ID, session_id=SESSION_ID, new_message=user_content
         ):
             if event.is_final_response() and event.content:
@@ -275,8 +276,9 @@ async def optimize_resume_with_agent(request: ResumeJobComparisonRequest):
 @app.post("/evaluate-resume")
 async def evaluate_resume_directly(request: ResumeEvaluationRequest):
     """
-    Directly evaluate and rate a resume using the comprehensive agent.
-    Takes resume text and job description as input - no file upload required.
+    Evaluate, rate, and generate an improved resume using sequential agents.
+    Step 1: Evaluation agent analyzes the resume
+    Step 2: Rating agent provides scores and generates improved version
     """
     try:
         if not request.resume_text.strip():
@@ -285,46 +287,93 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         if not request.job_description.strip():
             raise HTTPException(status_code=400, detail="Job description cannot be empty")
         
-        # Create a comprehensive prompt for the agent
-        prompt = f"""
-        Please evaluate and rate this resume comprehensively:
+        # Step 1: Evaluation Agent
+        evaluation_prompt = f"""
+        Analyze this resume for the job description provided:
 
-        RESUME CONTENT:
+        RESUME:
         {request.resume_text}
 
         JOB DESCRIPTION:
         {request.job_description}
 
-        Instructions:
-        1. Provide a comprehensive evaluation analyzing all aspects of the resume
-        2. Consider how well the resume matches the job description requirements
-        3. Provide numerical scores (1-10) for each category with detailed justifications
-        4. Include specific recommendations for improvement
-        5. Use web search to research industry trends if helpful
+        Provide a comprehensive evaluation covering:
+        1. How well the resume matches the job requirements
+        2. Key strengths and weaknesses  
+        3. ATS compatibility assessment
+        4. Missing skills or experience gaps
+        5. Overall suitability for the role
 
-        Please follow your structured response format with clear sections for:
-        - EVALUATION REPORT
-        - RATING RESULTS  
-        - RECOMMENDATIONS
+        Be thorough and specific in your analysis. Write at least 3-4 paragraphs with detailed observations.
         """
         
-        # Use the agent to process the request
-        user_content = types.Content(
-            role="user", parts=[types.Part(text=prompt)]
+        evaluation_content = types.Content(
+            role="user", parts=[types.Part(text=evaluation_prompt)]
         )
         
-        response_text = ""
-        async for event in runner.run_async(
-            user_id=USER_ID, session_id=SESSION_ID, new_message=user_content
+        evaluation_report = ""
+        chunk_count = 0
+        async for event in evaluation_runner.run_async(
+            user_id=USER_ID, session_id=SESSION_ID, new_message=evaluation_content
         ):
-            if event.is_final_response() and event.content:
-                response_text = event.content.parts[0].text
+            if event.content and event.content.parts:
+                chunk_count += 1
+                chunk_text = event.content.parts[0].text
+                evaluation_report += chunk_text
+                print(f"DEBUG: Evaluation chunk {chunk_count}: {len(chunk_text)} chars")
+        
+        print(f"DEBUG: Total evaluation report: {len(evaluation_report)} characters")
+        
+        # Step 2: Rating Agent (using evaluation report)
+        rating_prompt = f"""
+        Based on this evaluation, provide ratings and an improved resume:
+
+        EVALUATION:
+        {evaluation_report}
+
+        ORIGINAL RESUME:
+        {request.resume_text}
+
+        JOB DESCRIPTION:
+        {request.job_description}
+
+        Please provide:
+        1. Numerical ratings (1-10) for each category with justifications
+        2. Priority recommendations for improvement
+        3. An enhanced version of the original resume
+
+        For the improved resume, enhance the existing content by:
+        - Improving descriptions to highlight relevant skills
+        - Adding job-relevant keywords naturally
+        - Keeping all original factual information
+        - Better formatting and presentation
+
+        IMPORTANT: You must complete all three sections. For section 3, provide the FULL improved resume with all sections (contact, summary, experience, skills, education). Do not stop early.
+        """
+        
+        rating_content = types.Content(
+            role="user", parts=[types.Part(text=rating_prompt)]
+        )
+        
+        rating_results = ""
+        rating_chunk_count = 0
+        async for event in rating_runner.run_async(
+            user_id=USER_ID, session_id=SESSION_ID, new_message=rating_content
+        ):
+            if event.content and event.content.parts:
+                rating_chunk_count += 1
+                chunk_text = event.content.parts[0].text
+                rating_results += chunk_text
+                print(f"DEBUG: Rating chunk {rating_chunk_count}: {len(chunk_text)} chars")
+        
+        print(f"DEBUG: Total rating results: {len(rating_results)} characters")
         
         return {
             "success": True,
-            "comprehensive_analysis": response_text,
-            "workflow_type": "comprehensive_evaluation_and_rating",
-            "message": "Resume evaluation and rating completed successfully"
+            "evaluation_report": evaluation_report,
+            "rating_and_generation": rating_results,
+            "workflow_type": "sequential_evaluation_and_rating",
+            "message": "Resume evaluation and rating completed using sequential agents"
         }
         
     except HTTPException:
@@ -368,7 +417,7 @@ async def quick_resume_rating(request: QuickRatingRequest):
         )
         
         response_text = ""
-        async for event in runner.run_async(
+        async for event in rating_runner.run_async(
             user_id=USER_ID, session_id=SESSION_ID, new_message=user_content
         ):
             if event.is_final_response() and event.content:
@@ -415,7 +464,7 @@ async def create_run(thread_id: str, request: Request):
                     role="user", parts=[types.Part(text=last_message["content"])]
                 )
                 response_text = ""
-                async for event in runner.run_async(
+                async for event in evaluation_runner.run_async(
                     user_id=USER_ID, session_id=SESSION_ID, new_message=user_content
                 ):
                     if event.is_final_response() and event.content:
@@ -468,7 +517,7 @@ async def create_run_stream(thread_id: str, request: Request):
                         role="user", parts=[types.Part(text=last_message["content"])]
                     )
                     response_text = ""
-                    async for event in runner.run_async(
+                    async for event in evaluation_runner.run_async(
                         user_id=USER_ID, session_id=SESSION_ID, new_message=user_content
                     ):
                         if event.is_final_response() and event.content:
@@ -608,7 +657,7 @@ async def invoke(request: Request):
                     role="user", parts=[types.Part(text=user_message)]
                 )
                 response_text = ""
-                async for event in runner.run_async(
+                async for event in evaluation_runner.run_async(
                     user_id=USER_ID, session_id=SESSION_ID, new_message=user_content
                 ):
                     if event.is_final_response() and event.content:
@@ -668,7 +717,7 @@ async def invoke(request: Request):
             user_content = types.Content(role="user", parts=[types.Part(text=query)])
             response_text = ""
 
-            async for event in runner.run_async(
+            async for event in evaluation_runner.run_async(
                 user_id=USER_ID, session_id=SESSION_ID, new_message=user_content
             ):
                 if event.is_final_response() and event.content:
