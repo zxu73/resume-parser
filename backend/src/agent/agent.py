@@ -1,7 +1,6 @@
 import os
 from google.adk.agents import Agent
 from google.adk.tools import google_search
-from .tools import skills_matching_tool
 
 # First agent: Resume Evaluation Agent
 evaluation_agent = Agent(
@@ -31,10 +30,12 @@ evaluation_agent = Agent(
         "   - Note missing sections or content"
         "   - Assess keyword optimization for ATS"
         ""
-        "4. RESEARCH - Use available tools when helpful:"
-        "   - Use web search for industry trends and requirements"
-        "   - Use skills_matching_analyzer to get precise skills matching data"
-        "   - Use skills analysis to identify specific gaps and matches"
+        "4. SKILLS ANALYSIS DATA - Always use the skills analysis tool data when provided:"
+        "   - Reference the match_percentage for quantified job fit assessment"
+        "   - List matching_skills as candidate strengths"
+        "   - Highlight missing_skills as critical gaps to address"
+        "   - Use skills analysis summary for context"
+        "   - Provide specific match percentages and skill counts in your evaluation"
         ""
         "RESPONSE FORMAT:"
         "Provide a comprehensive evaluation report with:"
@@ -48,7 +49,7 @@ evaluation_agent = Agent(
         "Be thorough, specific, and provide concrete examples."
     ),
     description="Specializes in comprehensive resume evaluation and job matching analysis.",
-    tools=[google_search, skills_matching_tool],
+    tools=[google_search],
 )
 
 # Second agent: Resume Rating and Generation Agent
@@ -56,61 +57,45 @@ rating_agent = Agent(
     name="resume_rating_and_generation_agent",
     model=os.getenv("REASONING_MODEL", "gemini-2.0-flash"),
     instruction=(
-        "You are an expert resume rating and generation specialist. Your role is to:"
+        "You are an expert resume rating and improvement specialist. Provide:"
         ""
-        "1. RATING - Based on the evaluation report, provide scores (1-10) for:"
-        "   - Content Quality: Depth, relevance, achievements, quantifiable results"
-        "   - ATS Compatibility: Keyword usage, formatting, structure, parsing"
-        "   - Professional Presentation: Layout, readability, organization"
-        "   - Skills Match: Alignment with job requirements (if provided)"
-        "   - Experience Relevance: Career progression, industry fit, role alignment"
+        "1. DETAILED RATINGS (1-10) with specific justifications:"
+        "   - Content Quality: Specific examples of weak/strong descriptions, missing quantifiable achievements"
+        "   - ATS Compatibility: Exact formatting issues, missing keywords, section problems"
+        "   - Skills Match: Reference exact match_percentage, list specific missing_skills and matching_skills"
+        "   - Experience Relevance: Specific gaps in years, missing responsibilities, weak examples"
+        "2. TOP 3 PRIORITY RECOMMENDATIONS with specific examples:"
+        "   - High Priority: 'Replace vague phrase X with specific metric Y'"
+        "   - Medium Priority: 'Add missing keyword Z from job description'"
+        "   - Low Priority: 'Improve formatting of section A'"
+        "3. COMPLETE IMPROVED RESUME with all sections"
         ""
-        "2. SCORING METHODOLOGY:"
-        "   - Calculate overall rating from individual scores"
-        "   - Provide letter grade (A-F) based on overall score"
-        "   - Justify each score with specific examples"
-        "   - Reference the evaluation report for evidence"
+        "ALWAYS USE SKILLS ANALYSIS DATA when provided:"
+        "- Use match_percentage for Skills Match rating"
+        "- Reference matching_skills as strengths in ratings"
+        "- Include missing_skills in recommendations"
+        "- Base improvement suggestions on skills gaps identified"
         ""
-        "3. RECOMMENDATIONS - Prioritize improvement suggestions:"
-        "   - High Priority: Critical issues affecting job prospects"
-        "   - Medium Priority: Important improvements for competitiveness"
-        "   - Low Priority: Nice-to-have enhancements"
+        "For the improved resume:"
+        "- Keep all original contact info and factual details"
+        "- Enhance professional summary for job alignment"
+        "- Rewrite work experience to highlight matching_skills"
+        "- Add missing_skills naturally into descriptions"
+        "- Improve formatting for ATS compatibility"
+        "- DO NOT add fake experience or positions"
         ""
-        "4. RESUME IMPROVEMENT - Enhance the existing resume:"
-        "   - Keep all original contact information and factual details"
-        "   - Improve professional summary to better align with job requirements"
-        "   - Rewrite work experience descriptions to highlight relevant skills"
-        "   - Rephrase existing achievements to sound more impactful"
-        "   - Add relevant keywords from job description naturally"
-        "   - Reorganize skills section to emphasize job-relevant technologies"
-        "   - Improve formatting and presentation for ATS compatibility"
-        "   - DO NOT add fake experience, positions, or fabricated achievements"
-        "   - Only enhance and reword existing content"
+        "CRITICAL: Always complete the full improved resume. Do not stop early."
         ""
-        "RESPONSE FORMAT:"
+        "Format:"
         "# RATING RESULTS"
-        "- Individual category scores with detailed justifications"
-        "- Overall rating and letter grade"
-        "- Scoring methodology explanation"
-        ""
+        "- Content Quality: X/10 - Quote specific weak phrases like 'developed web applications', missing metrics like '15% improvement', vague terms like 'various projects'"
+        "- ATS Compatibility: X/10 - Missing keywords: 'AWS', 'Docker', 'Microservices'. Formatting issues: none. Section problems: none"
+        "- Skills Match: X/10 - Exact match: 37.5%. Missing skills: AWS, Docker, Team Leadership. Matching skills: Python, Django, React"
+        "- Experience Relevance: X/10 - Gap: requires 5+ years, has 3 years. Weak descriptions: 'worked on projects' lacks specificity"
         "# PRIORITY RECOMMENDATIONS"
-        "- High Priority improvements"
-        "- Medium Priority enhancements"
-        "- Low Priority suggestions"
-        ""
         "# IMPROVED RESUME"
-        "Present the enhanced version of the original resume with:"
-        "- Same contact information and factual details"
-        "- Improved professional summary that better matches the job"
-        "- Rewritten work experience descriptions emphasizing relevant skills"
-        "- Enhanced skills section with job-relevant keywords added"
-        "- Better formatting and presentation"
-        "- Only improve wording and presentation of existing content"
-        "- Do not add fake positions, companies, or fabricated achievements"
-        "- Focus on making existing experience sound more relevant to the job"
-        ""
-        "Base all ratings and improvements on the evaluation report provided."
+        "[Complete resume with all sections]"
     ),
     description="Specializes in resume rating, recommendations, and generating improved versions.",
-    tools=[google_search, skills_matching_tool],
+    tools=[google_search],
 )

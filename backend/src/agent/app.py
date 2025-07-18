@@ -5,7 +5,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from .agent import evaluation_agent, rating_agent
-from .utils import analyze_resume_file, analyze_job_description, compare_resume_to_job
 import json
 import asyncio
 from contextlib import asynccontextmanager
@@ -287,6 +286,10 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         if not request.job_description.strip():
             raise HTTPException(status_code=400, detail="Job description cannot be empty")
         
+        # Get skills analysis first
+        from .tools import analyze_skills_matching
+        skills_analysis = analyze_skills_matching(request.resume_text, request.job_description)
+        
         # Step 1: Evaluation Agent
         evaluation_prompt = f"""
         Analyze this resume for the job description provided:
@@ -297,14 +300,23 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         JOB DESCRIPTION:
         {request.job_description}
 
+        SKILLS ANALYSIS DATA (USE THIS):
+        {skills_analysis}
+
+        CRITICAL: Use the skills analysis data above to provide specific insights:
+        - Reference the match_percentage (e.g., "37.5% match")
+        - List the matching_skills as strengths
+        - Highlight the missing_skills as gaps
+        - Use the skills analysis summary for context
+
         Provide a comprehensive evaluation covering:
-        1. How well the resume matches the job requirements
-        2. Key strengths and weaknesses  
+        1. How well the resume matches the job requirements (use match_percentage)
+        2. Key strengths (reference matching_skills) and weaknesses (reference missing_skills)
         3. ATS compatibility assessment
-        4. Missing skills or experience gaps
+        4. Missing skills or experience gaps (use missing_skills list)
         5. Overall suitability for the role
 
-        Be thorough and specific in your analysis. Write at least 3-4 paragraphs with detailed observations.
+        Be thorough and specific in your analysis with quantified data from the skills analysis.
         """
         
         evaluation_content = types.Content(
@@ -324,12 +336,15 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         
         print(f"DEBUG: Total evaluation report: {len(evaluation_report)} characters")
         
-        # Step 2: Rating Agent (using evaluation report)
+        # Step 2: Rating Agent (using evaluation report from first agent)
         rating_prompt = f"""
-        Based on this evaluation, provide ratings and an improved resume:
+        Based on the comprehensive evaluation from the first agent, provide ratings and generate an improved resume:
 
-        EVALUATION:
+        EVALUATION REPORT FROM FIRST AGENT:
         {evaluation_report}
+
+        SKILLS ANALYSIS DATA:
+        {skills_analysis}
 
         ORIGINAL RESUME:
         {request.resume_text}
@@ -337,18 +352,25 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         JOB DESCRIPTION:
         {request.job_description}
 
-        Please provide:
-        1. Numerical ratings (1-10) for each category with justifications
-        2. Priority recommendations for improvement
-        3. An enhanced version of the original resume
+        CRITICAL: Use the evaluation report above as your primary source, supported by skills analysis data:
+        - Base your ratings on the evaluation report findings
+        - Reference specific issues and strengths mentioned in the evaluation
+        - Use skills analysis data for quantified insights (match_percentage, missing_skills)
+        - Address the improvement areas identified in the evaluation
 
-        For the improved resume, enhance the existing content by:
-        - Improving descriptions to highlight relevant skills
-        - Adding job-relevant keywords naturally
-        - Keeping all original factual information
-        - Better formatting and presentation
+        Provide:
+        1. DETAILED RATINGS (1-10) with specific justifications:
+           - Content Quality: Quote specific weak phrases, identify missing metrics/numbers, point out vague language
+           - ATS Compatibility: List exact missing keywords, identify formatting issues, note section problems
+           - Skills Match: State exact match_percentage, list specific missing_skills and matching_skills from analysis
+           - Experience Relevance: Identify specific experience gaps, weak job descriptions, missing achievements
+        2. Top 3 priority recommendations with specific examples:
+           - High Priority: Quote exact text to change and what to replace it with
+           - Medium Priority: List specific missing keywords/skills to add and where
+           - Low Priority: Identify exact formatting or structural improvements needed
+        3. Complete improved resume with all sections (addressing evaluation feedback)
 
-        IMPORTANT: You must complete all three sections. For section 3, provide the FULL improved resume with all sections (contact, summary, experience, skills, education). Do not stop early.
+        Focus on creating a FULL improved resume that addresses the specific issues and gaps identified in the evaluation report.
         """
         
         rating_content = types.Content(
@@ -357,16 +379,29 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         
         rating_results = ""
         rating_chunk_count = 0
-        async for event in rating_runner.run_async(
-            user_id=USER_ID, session_id=SESSION_ID, new_message=rating_content
-        ):
-            if event.content and event.content.parts:
-                rating_chunk_count += 1
-                chunk_text = event.content.parts[0].text
-                rating_results += chunk_text
-                print(f"DEBUG: Rating chunk {rating_chunk_count}: {len(chunk_text)} chars")
         
+        try:
+            async for event in rating_runner.run_async(
+                user_id=USER_ID, session_id=SESSION_ID, new_message=rating_content
+            ):
+                if event.content and event.content.parts:
+                    rating_chunk_count += 1
+                    chunk_text = event.content.parts[0].text
+                    rating_results += chunk_text
+                    print(f"DEBUG: Rating chunk {rating_chunk_count}: {len(chunk_text)} chars")
+                    
+                    # Check if we have the complete improved resume
+                    if "# IMPROVED RESUME" in rating_results and rating_results.count("Education") > 0:
+                        print("DEBUG: Found complete resume structure")
+                        
+        except Exception as e:
+            print(f"DEBUG: Rating stream error: {e}")
+            
         print(f"DEBUG: Total rating results: {len(rating_results)} characters")
+        
+        # Check if response seems truncated
+        if len(rating_results) > 0 and not rating_results.strip().endswith((".", "!", "?", "```")):
+            print("WARNING: Response may be truncated")
         
         return {
             "success": True,
