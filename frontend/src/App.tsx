@@ -1,182 +1,302 @@
-import { useStream } from "@langchain/langgraph-sdk/react";
-import type { Message } from "@langchain/langgraph-sdk";
-import { useState, useEffect, useRef, useCallback } from "react";
-import { ProcessedEvent } from "./components/ActivityTimeline";
-import { WelcomeScreen } from "./components/WelcomeScreen";
-import { ChatMessagesView } from "./components/ChatMessagesView";
+import React, { useState, useRef } from 'react';
+import { Button } from './components/ui/button';
+import { Textarea } from './components/ui/textarea';
+
+// Types
+interface AnalysisResult {
+  success: boolean;
+  evaluation_report: string;
+  rating_and_generation: string;
+  workflow_type: string;
+  message: string;
+}
 
 export default function App() {
-  const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
-    ProcessedEvent[]
-  >([]);
-  const [historicalActivities, setHistoricalActivities] = useState<
-    Record<string, ProcessedEvent[]>
-  >({});
-  const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const hasFinalizeEventOccurredRef = useRef(false);
+  // State management
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [jobDescription, setJobDescription] = useState('');
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const thread = useStream<{
-    messages: Message[];
-    initial_search_query_count: number;
-    max_research_loops: number;
-    reasoning_model: string;
-  }>({
-    apiUrl: "http://localhost:8000",
-    assistantId: "agent",
-    messagesKey: "messages",
-    onFinish: (event: any) => {
-      console.log(event);
-    },
-    onUpdateEvent: (event: any) => {
-      let processedEvent: ProcessedEvent | null = null;
-      if (event.generate_query) {
-        processedEvent = {
-          title: "Generating Search Queries",
-          data: event.generate_query.query_list.join(", "),
-        };
-      } else if (event.web_research) {
-        const sources = event.web_research.sources_gathered || [];
-        const numSources = sources.length;
-        const uniqueLabels = [
-          ...new Set(sources.map((s: any) => s.label).filter(Boolean)),
-        ];
-        const exampleLabels = uniqueLabels.slice(0, 3).join(", ");
-        processedEvent = {
-          title: "Web Research",
-          data: `Gathered ${numSources} sources. Related to: ${
-            exampleLabels || "N/A"
-          }.`,
-        };
-      } else if (event.reflection) {
-        processedEvent = {
-          title: "Reflection",
-          data: event.reflection.is_sufficient
-            ? "Search successful, generating final answer."
-            : `Need more information, searching for ${event.reflection.follow_up_queries.join(
-                ", "
-              )}`,
-        };
-      } else if (event.finalize_answer) {
-        processedEvent = {
-          title: "Finalizing Answer",
-          data: "Composing and presenting the final answer.",
-        };
-        hasFinalizeEventOccurredRef.current = true;
-      }
-      if (processedEvent) {
-        setProcessedEventsTimeline((prevEvents) => [
-          ...prevEvents,
-          processedEvent!,
-        ]);
-      }
-    },
-  });
-
-  useEffect(() => {
-    if (scrollAreaRef.current) {
-      const scrollViewport = scrollAreaRef.current.querySelector(
-        "[data-radix-scroll-area-viewport]"
-      );
-      if (scrollViewport) {
-        scrollViewport.scrollTop = scrollViewport.scrollHeight;
-      }
-    }
-  }, [thread.messages]);
-
-  useEffect(() => {
-    if (
-      hasFinalizeEventOccurredRef.current &&
-      !thread.isLoading &&
-      thread.messages.length > 0
-    ) {
-      const lastMessage = thread.messages[thread.messages.length - 1];
-      if (lastMessage && lastMessage.type === "ai" && lastMessage.id) {
-        setHistoricalActivities((prev) => ({
-          ...prev,
-          [lastMessage.id!]: [...processedEventsTimeline],
-        }));
-      }
-      hasFinalizeEventOccurredRef.current = false;
-    }
-  }, [thread.messages, thread.isLoading, processedEventsTimeline]);
-
-  const handleSubmit = useCallback(
-    (submittedInputValue: string, effort: string, model: string) => {
-      if (!submittedInputValue.trim()) return;
-      setProcessedEventsTimeline([]);
-      hasFinalizeEventOccurredRef.current = false;
-
-      // convert effort to, initial_search_query_count and max_research_loops
-      // low means max 1 loop and 1 query
-      // medium means max 3 loops and 3 queries
-      // high means max 10 loops and 5 queries
-      let initial_search_query_count = 0;
-      let max_research_loops = 0;
-      switch (effort) {
-        case "low":
-          initial_search_query_count = 1;
-          max_research_loops = 1;
-          break;
-        case "medium":
-          initial_search_query_count = 3;
-          max_research_loops = 3;
-          break;
-        case "high":
-          initial_search_query_count = 5;
-          max_research_loops = 10;
-          break;
-      }
-
-      const newMessages: Message[] = [
-        ...(thread.messages || []),
-        {
-          type: "human",
-          content: submittedInputValue,
-          id: Date.now().toString(),
-        },
+  // File upload handler
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      // Validate file type
+      const allowedTypes = [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain'
       ];
-      thread.submit({
-        messages: newMessages,
-        initial_search_query_count: initial_search_query_count,
-        max_research_loops: max_research_loops,
-        reasoning_model: model,
-      });
-    },
-    [thread]
-  );
+      
+      if (!allowedTypes.includes(file.type)) {
+        setError('Please upload a PDF, DOC, DOCX, or TXT file');
+        return;
+      }
+      
+      if (file.size > 10 * 1024 * 1024) { // 10MB limit
+        setError('File size must be less than 10MB');
+        return;
+      }
+      
+      setSelectedFile(file);
+      setError(null);
+    }
+  };
 
-  const handleCancel = useCallback(() => {
-    thread.stop();
-    window.location.reload();
-  }, [thread]);
+  // Extract text from resume file
+  const extractResumeText = async (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (file.type === 'text/plain') {
+          resolve(event.target?.result as string);
+        } else {
+          resolve('FILE_UPLOAD_REQUIRED');
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsText(file);
+    });
+  };
+
+  // Start analysis
+  const startAnalysis = async () => {
+    if (!selectedFile || !jobDescription.trim()) {
+      setError('Please upload a resume and provide a job description');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setError(null);
+
+    try {
+      let resumeText = '';
+      
+      // Extract resume text or upload file to backend
+      if (selectedFile.type === 'text/plain') {
+        resumeText = await extractResumeText(selectedFile);
+      } else {
+        // Upload PDF, DOC, DOCX files to backend for processing
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        
+        const uploadResponse = await fetch('http://localhost:8000/upload-resume', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!uploadResponse.ok) {
+          const errorData = await uploadResponse.json();
+          throw new Error(errorData.detail || 'Failed to upload resume');
+        }
+        
+        const uploadResult = await uploadResponse.json();
+        
+        if (!uploadResult.success) {
+          throw new Error(uploadResult.error || 'Resume analysis failed');
+        }
+        
+        resumeText = uploadResult.analysis || `Resume analysis for ${selectedFile.name}`;
+      }
+
+      // Call the main evaluation endpoint
+      const evaluationResponse = await fetch('http://localhost:8000/evaluate-resume', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          resume_text: resumeText,
+          job_description: jobDescription
+        })
+      });
+
+      if (!evaluationResponse.ok) {
+        const errorData = await evaluationResponse.json();
+        throw new Error(errorData.detail || 'Analysis failed');
+      }
+
+      const result = await evaluationResponse.json();
+      
+      if (!result.success) {
+        throw new Error(result.message || 'Analysis failed');
+      }
+      
+      setAnalysisResult(result);
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Analysis failed');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // Reset form
+  const resetForm = () => {
+    setSelectedFile(null);
+    setJobDescription('');
+    setAnalysisResult(null);
+    setIsAnalyzing(false);
+    setError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   return (
-    <div className="flex h-screen bg-neutral-800 text-neutral-100 font-sans antialiased">
-      <main className="flex-1 flex flex-col overflow-hidden max-w-4xl mx-auto w-full">
-        <div
-          className={`flex-1 overflow-y-auto ${
-            thread.messages.length === 0 ? "flex" : ""
-          }`}
-        >
-          {thread.messages.length === 0 ? (
-            <WelcomeScreen
-              handleSubmit={handleSubmit}
-              isLoading={thread.isLoading}
-              onCancel={handleCancel}
-            />
-          ) : (
-            <ChatMessagesView
-              messages={thread.messages}
-              isLoading={thread.isLoading}
-              scrollAreaRef={scrollAreaRef}
-              onSubmit={handleSubmit}
-              onCancel={handleCancel}
-              liveActivityEvents={processedEventsTimeline}
-              historicalActivities={historicalActivities}
-            />
-          )}
+    <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
+      <h1>AI Resume Optimizer</h1>
+      <p>Upload your resume and job description to get AI-powered feedback</p>
+
+      {/* Error Display */}
+      {error && (
+        <div style={{ 
+          backgroundColor: '#ffebee', 
+          border: '1px solid #f44336', 
+          padding: '10px', 
+          marginBottom: '20px',
+          borderRadius: '4px',
+          color: '#d32f2f'
+        }}>
+          Error: {error}
         </div>
-      </main>
+      )}
+
+      {/* File Upload */}
+      <div style={{ marginBottom: '20px' }}>
+        <h2>1. Upload Resume</h2>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.doc,.docx,.txt"
+          onChange={handleFileSelect}
+          style={{ marginBottom: '10px' }}
+        />
+        {selectedFile && (
+          <div style={{ color: 'green' }}>
+            ✓ Selected: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
+          </div>
+        )}
+      </div>
+
+      {/* Job Description */}
+      <div style={{ marginBottom: '20px' }}>
+        <h2>2. Job Description</h2>
+        <Textarea
+          placeholder="Paste the job description here..."
+          value={jobDescription}
+          onChange={(e) => setJobDescription(e.target.value)}
+          style={{ width: '100%', minHeight: '150px', marginBottom: '10px' }}
+        />
+        <div style={{ fontSize: '14px', color: '#666' }}>
+          {jobDescription.length} characters
+        </div>
+      </div>
+
+      {/* Action Buttons */}
+      <div style={{ marginBottom: '30px' }}>
+        <Button
+          onClick={startAnalysis}
+          disabled={!selectedFile || !jobDescription.trim() || isAnalyzing}
+          style={{ marginRight: '10px' }}
+        >
+          {isAnalyzing ? 'Analyzing...' : 'Start Analysis'}
+        </Button>
+        
+        {(selectedFile || jobDescription || analysisResult) && (
+          <Button onClick={resetForm} variant="outline">
+            Reset
+          </Button>
+        )}
+      </div>
+
+      {/* Loading State */}
+      {isAnalyzing && (
+        <div style={{ 
+          backgroundColor: '#e3f2fd', 
+          padding: '20px', 
+          borderRadius: '4px',
+          marginBottom: '20px'
+        }}>
+          <h3>Analysis in Progress...</h3>
+          <p>AI agents are analyzing your resume. This may take a minute.</p>
+        </div>
+      )}
+
+      {/* Results */}
+      {analysisResult && (
+        <div>
+          <h2>3. Analysis Results</h2>
+          
+          {/* Evaluation Report */}
+          <div style={{ marginBottom: '30px' }}>
+            <h3>Evaluation Report</h3>
+            <div style={{ 
+              backgroundColor: '#f5f5f5', 
+              padding: '15px', 
+              borderRadius: '4px',
+              maxHeight: '400px',
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              fontFamily: 'monospace',
+              fontSize: '14px'
+            }}>
+              {analysisResult.evaluation_report}
+            </div>
+          </div>
+
+          {/* Ratings & Improved Resume */}
+          <div style={{ marginBottom: '30px' }}>
+            <h3>Ratings & Improved Resume</h3>
+            <div style={{ 
+              backgroundColor: '#f5f5f5', 
+              padding: '15px', 
+              borderRadius: '4px',
+              maxHeight: '400px',
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              fontFamily: 'monospace',
+              fontSize: '14px'
+            }}>
+              {analysisResult.rating_and_generation}
+            </div>
+          </div>
+
+          {/* Download Options */}
+          <div>
+            <h3>Download Options</h3>
+            <Button 
+              style={{ marginRight: '10px' }}
+              onClick={() => {
+                const content = `EVALUATION REPORT:\n${analysisResult.evaluation_report}\n\nRATINGS & IMPROVED RESUME:\n${analysisResult.rating_and_generation}`;
+                const blob = new Blob([content], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'resume-analysis-report.txt';
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
+              Download Analysis Report (TXT)
+            </Button>
+            <Button 
+              variant="outline"
+              onClick={() => {
+                navigator.clipboard.writeText(analysisResult.rating_and_generation);
+                alert('Improved resume copied to clipboard!');
+              }}
+            >
+              Copy Improved Resume
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
