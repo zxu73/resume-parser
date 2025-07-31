@@ -337,6 +337,15 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         
         print(f"DEBUG: Total evaluation report: {len(evaluation_report)} characters")
         
+        # Parse JSON response from structured output
+        try:
+            evaluation_data = json.loads(evaluation_report)
+            print("DEBUG: Successfully parsed evaluation JSON")
+        except json.JSONDecodeError as e:
+            print(f"DEBUG: Failed to parse evaluation JSON: {e}")
+            # Fallback to original text format
+            evaluation_data = {"raw_text": evaluation_report}
+        
         # Step 2: Rating Agent (using evaluation report from first agent)
         rating_prompt = f"""
         Based on the comprehensive evaluation from the first agent, provide ratings and generate an improved resume:
@@ -390,24 +399,25 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
                     chunk_text = event.content.parts[0].text
                     rating_results += chunk_text
                     print(f"DEBUG: Rating chunk {rating_chunk_count}: {len(chunk_text)} chars")
-                    
-                    # Check if we have the complete improved resume
-                    if "# IMPROVED RESUME" in rating_results and rating_results.count("Education") > 0:
-                        print("DEBUG: Found complete resume structure")
                         
         except Exception as e:
             print(f"DEBUG: Rating stream error: {e}")
             
         print(f"DEBUG: Total rating results: {len(rating_results)} characters")
         
-        # Check if response seems truncated
-        if len(rating_results) > 0 and not rating_results.strip().endswith((".", "!", "?", "```")):
-            print("WARNING: Response may be truncated")
+        # Parse JSON response from structured output
+        try:
+            rating_data = json.loads(rating_results)
+            print("DEBUG: Successfully parsed rating JSON")
+        except json.JSONDecodeError as e:
+            print(f"DEBUG: Failed to parse rating JSON: {e}")
+            # Fallback to original text format
+            rating_data = {"raw_text": rating_results}
         
         return {
             "success": True,
-            "evaluation_report": evaluation_report,
-            "rating_and_generation": rating_results,
+            "structured_evaluation": evaluation_data,
+            "structured_rating": rating_data,
             "workflow_type": "sequential_evaluation_and_rating",
             "message": "Resume evaluation and rating completed using sequential agents"
         }

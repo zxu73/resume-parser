@@ -1,15 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { Button } from './components/ui/button';
 import { Textarea } from './components/ui/textarea';
-
-// Types
-interface AnalysisResult {
-  success: boolean;
-  evaluation_report: string;
-  rating_and_generation: string;
-  workflow_type: string;
-  message: string;
-}
+import { AnalysisDashboard } from './components/AnalysisDashboard';
+import { AnalysisResult } from './types/analysis';
 
 export default function App() {
   // State management
@@ -233,67 +226,20 @@ export default function App() {
         <div>
           <h2>3. Analysis Results</h2>
           
-          {/* Evaluation Report */}
-          <div style={{ marginBottom: '30px' }}>
-            <h3>Evaluation Report</h3>
-            <div style={{ 
-              backgroundColor: '#f5f5f5', 
-              padding: '15px', 
-              borderRadius: '4px',
-              maxHeight: '400px',
-              overflow: 'auto',
-              whiteSpace: 'pre-wrap',
-              fontFamily: 'monospace',
-              fontSize: '14px'
-            }}>
-              {analysisResult.evaluation_report}
-            </div>
-          </div>
-
-          {/* Ratings & Improved Resume */}
-          <div style={{ marginBottom: '30px' }}>
-            <h3>Ratings & Improved Resume</h3>
-            <div style={{ 
-              backgroundColor: '#f5f5f5', 
-              padding: '15px', 
-              borderRadius: '4px',
-              maxHeight: '400px',
-              overflow: 'auto',
-              whiteSpace: 'pre-wrap',
-              fontFamily: 'monospace',
-              fontSize: '14px'
-            }}>
-              {analysisResult.rating_and_generation}
-            </div>
-          </div>
-
-          {/* Download Options */}
-          <div>
-            <h3>Download Options</h3>
-            <Button 
-              style={{ marginRight: '10px' }}
-              onClick={() => {
-                const content = `EVALUATION REPORT:\n${analysisResult.evaluation_report}\n\nRATINGS & IMPROVED RESUME:\n${analysisResult.rating_and_generation}`;
-                const blob = new Blob([content], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'resume-analysis-report.txt';
-                a.click();
-                URL.revokeObjectURL(url);
-              }}
-            >
-              Download Analysis Report (TXT)
-            </Button>
-            <Button 
-              variant="outline"
-              onClick={() => {
-                navigator.clipboard.writeText(analysisResult.rating_and_generation);
-                alert('Improved resume copied to clipboard!');
-              }}
-            >
-              Copy Improved Resume
-            </Button>
+          <div className="mt-6">
+            {analysisResult.structured_evaluation && analysisResult.structured_rating ? (
+              <AnalysisDashboard 
+                evaluation={analysisResult.structured_evaluation}
+                rating={analysisResult.structured_rating}
+              />
+            ) : (
+              <div className="p-6 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <h3 className="font-semibold text-yellow-800 mb-2">Structured Data Not Available</h3>
+                <p className="text-yellow-700">
+                  The analysis system is not properly configured with schema support. Please contact support.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
