@@ -17,7 +17,6 @@ export interface StructuredEvaluation {
   job_match_percentage: number;
   section_analysis: {
     contact_info: SectionAnalysis;
-    professional_summary: SectionAnalysis;
     work_experience: SectionAnalysis;
     education: SectionAnalysis;
     skills: SectionAnalysis;
@@ -39,7 +38,13 @@ export interface DetailedRating {
   matching_skills?: string[];
   missing_skills?: string[];
   gaps?: string[];
-  paraphrasing_opportunities?: string[];  // For experience improvements
+}
+
+export interface ParaphrasingSuggestion {
+  current_text: string;
+  suggested_text: string;
+  job_requirement_reference: string;
+  alignment_reason: string;
 }
 
 export interface PriorityRecommendation {
@@ -47,11 +52,11 @@ export interface PriorityRecommendation {
   title: string;
   description: string;
   specific_example: string;
+  paraphrasing_suggestion?: ParaphrasingSuggestion;
 }
 
 export interface ImprovedResume {
   contact_info: string;
-  professional_summary: string;
   work_experience: string[];
   education: string;
   skills: string[];

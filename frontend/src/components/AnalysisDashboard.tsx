@@ -63,9 +63,6 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation
     const resume = rating.improved_resume;
     const content = `${resume.contact_info}
 
-PROFESSIONAL SUMMARY
-${resume.professional_summary}
-
 WORK EXPERIENCE
 ${resume.work_experience.join('\n\n')}
 
@@ -193,18 +190,59 @@ ${resume.additional_sections.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additio
 
       {/* Priority Recommendations */}
       <Card className="p-6">
-        <h2 className="text-xl font-bold mb-4">Priority Recommendations</h2>
-        <div className="space-y-4">
+        <h2 className="text-xl font-bold mb-4">Priority Recommendations - Job Alignment Focus</h2>
+        <div className="space-y-6">
           {rating.priority_recommendations.map((rec, index) => (
             <div key={index} className="border rounded-lg p-4 bg-gray-50">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="font-semibold">{rec.title}</h3>
                 <PriorityIcon priority={rec.priority} />
               </div>
-              <p className="text-gray-700 mb-2">{rec.description}</p>
+              <p className="text-gray-700 mb-3">{rec.description}</p>
+              
+              {rec.paraphrasing_suggestion && (
+                <div className="bg-white border rounded-lg p-4 mb-3">
+                  <h4 className="font-semibold text-blue-700 mb-3 flex items-center">
+                    <span className="mr-2">✏️</span>
+                    Paraphrasing Suggestion for Better Job Alignment
+                  </h4>
+                  
+                  {/* Job Requirement Reference */}
+                  <div className="mb-3 p-2 bg-blue-50 rounded border-l-4 border-blue-400">
+                    <strong className="text-blue-800">Targets Job Requirement:</strong>
+                    <p className="text-blue-700 text-sm mt-1">{rec.paraphrasing_suggestion.job_requirement_reference}</p>
+                  </div>
+                  
+                  {/* Before/After Comparison */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
+                    <div className="p-3 bg-red-50 border border-red-200 rounded">
+                      <h5 className="font-medium text-red-800 mb-2 flex items-center">
+                        <span className="mr-1">❌</span>
+                        Current Text
+                      </h5>
+                      <p className="text-sm text-red-700 italic">"{rec.paraphrasing_suggestion.current_text}"</p>
+                    </div>
+                    
+                    <div className="p-3 bg-green-50 border border-green-200 rounded">
+                      <h5 className="font-medium text-green-800 mb-2 flex items-center">
+                        <span className="mr-1">✅</span>
+                        Suggested Text
+                      </h5>
+                      <p className="text-sm text-green-700 font-medium">"{rec.paraphrasing_suggestion.suggested_text}"</p>
+                    </div>
+                  </div>
+                  
+                  {/* Alignment Reason */}
+                  <div className="p-2 bg-yellow-50 border-l-4 border-yellow-400">
+                    <strong className="text-yellow-800">Why This Improves Job Fit:</strong>
+                    <p className="text-yellow-700 text-sm mt-1">{rec.paraphrasing_suggestion.alignment_reason}</p>
+                  </div>
+                </div>
+              )}
+              
               {rec.specific_example && (
                 <div className="bg-white border-l-4 border-blue-500 pl-3 py-2 text-sm">
-                  <strong>Example:</strong> {rec.specific_example}
+                  <strong>General Guidance:</strong> {rec.specific_example}
                 </div>
               )}
             </div>
@@ -252,7 +290,7 @@ ${resume.additional_sections.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additio
             variant="outline"
             onClick={() => {
               const resume = rating.improved_resume;
-              const content = `${resume.contact_info}\n\nPROFESSIONAL SUMMARY\n${resume.professional_summary}\n\nWORK EXPERIENCE\n${resume.work_experience.join('\n\n')}\n\nEDUCATION\n${resume.education}\n\nSKILLS\n${resume.skills.join(', ')}`;
+              const content = `${resume.contact_info}\n\nWORK EXPERIENCE\n${resume.work_experience.join('\n\n')}\n\nEDUCATION\n${resume.education}\n\nSKILLS\n${resume.skills.join(', ')}`;
               navigator.clipboard.writeText(content);
               alert('Improved resume copied to clipboard!');
             }}

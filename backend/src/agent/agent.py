@@ -13,7 +13,6 @@ class SectionAnalysisItem(BaseModel):
 
 class SectionAnalysis(BaseModel):
     contact_info: SectionAnalysisItem
-    professional_summary: SectionAnalysisItem
     work_experience: SectionAnalysisItem
     education: SectionAnalysisItem
     skills: SectionAnalysisItem
@@ -56,10 +55,16 @@ class PriorityRecommendation(BaseModel):
     title: str
     description: str
     specific_example: str
+    paraphrasing_suggestion: Optional["ParaphrasingSuggestion"] = None
+
+class ParaphrasingSuggestion(BaseModel):
+    current_text: str = Field(..., description="Current text from the resume")
+    suggested_text: str = Field(..., description="Improved text aligned with job requirements")
+    job_requirement_reference: str = Field(..., description="Specific job requirement this addresses")
+    alignment_reason: str = Field(..., description="Why this change improves job alignment")
 
 class ImprovedResume(BaseModel):
     contact_info: str
-    professional_summary: str
     work_experience: List[str]
     education: str
     skills: List[str]
@@ -90,16 +95,15 @@ EVALUATION_SCHEMA = {
             "maximum": 100,
             "description": "Percentage match with job requirements"
         },
-        "section_analysis": {
-            "type": "object",
-            "properties": {
-                "contact_info": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
-                "professional_summary": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
-                "work_experience": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
-                "education": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
-                "skills": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}}
-            }
-        },
+                    "section_analysis": {
+                "type": "object",
+                "properties": {
+                    "contact_info": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
+                    "work_experience": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
+                    "education": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
+                    "skills": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}}
+                }
+            },
         "strengths": {
             "type": "array",
             "items": {"type": "string"},
@@ -187,17 +191,16 @@ RATING_SCHEMA = {
             },
             "maxItems": 5
         },
-        "improved_resume": {
-            "type": "object",
-            "properties": {
-                "contact_info": {"type": "string"},
-                "professional_summary": {"type": "string"},
-                "work_experience": {"type": "array", "items": {"type": "string"}},
-                "education": {"type": "string"},
-                "skills": {"type": "array", "items": {"type": "string"}},
-                "additional_sections": {"type": "array", "items": {"type": "string"}}
+                    "improved_resume": {
+                "type": "object",
+                "properties": {
+                    "contact_info": {"type": "string"},
+                    "work_experience": {"type": "array", "items": {"type": "string"}},
+                    "education": {"type": "string"},
+                    "skills": {"type": "array", "items": {"type": "string"}},
+                    "additional_sections": {"type": "array", "items": {"type": "string"}}
+                }
             }
-        }
     },
     "required": ["detailed_ratings", "priority_recommendations", "improved_resume"]
 }
@@ -220,7 +223,6 @@ evaluation_agent = LlmAgent(
         "3. JOB MATCH PERCENTAGE - Calculate precise percentage match with job requirements (0-100)"
         "4. SECTION ANALYSIS - Score each section (1-10) with specific feedback:"
         "   - contact_info: Professional completeness and presentation"
-        "   - professional_summary: Effectiveness and job relevance"
         "   - work_experience: Depth, achievements, quantifiable results"
         "   - education: Relevance and presentation"
         "   - skills: Technical and soft skills assessment"
@@ -229,6 +231,28 @@ evaluation_agent = LlmAgent(
         "7. MISSING SKILLS - Skills required by job but absent from resume"
         "8. MATCHING SKILLS - Skills that align with job requirements"
         "9. ATS COMPATIBILITY - Score, issues list, and recommendations list"
+        ""
+        "SECTION CONTENT GUIDELINES:"
+        "- EDUCATION: Include major(s), minor(s), clusters, study abroad experience. First/second year students can include high school."
+        "- EXPERIENCE: Include internships, research, part-time, summer, and volunteer work. Focus on recent and relevant experiences that communicate skills and abilities. Describe duties/projects without 'I' or 'we' - start with active verbs in past/present tense. Use STAR format (Situation-Task-Action-Result) with measurable outcomes."
+        "- ACTIVITIES & LEADERSHIP: Highlight career competencies, student organizations, extracurricular roles that demonstrate leadership."
+        "- SKILLS: Include technical, computer/software, laboratory, foreign languages. Keep brief as this is not the core assessment focus."
+        "- PROFESSIONAL SUMMARY: Not needed. Do not recommend or suggest adding this section."
+        ""
+        "STAR FORMAT ANALYSIS:"
+        "Evaluate experience descriptions for STAR structure:"
+        "- Situation: Context and background setting"
+        "- Task: Specific role/responsibility in that situation"  
+        "- Action: What was done to address the task"
+        "- Result: Measurable outcomes and impact"
+        "Identify missing STAR elements and recommend improvements."
+        ""
+        "SKILL INTEGRATION OPPORTUNITIES:"
+        "Analyze experiences that could naturally incorporate missing skills:"
+        "- Look for experiences related to missing technical skills"
+        "- Identify where missing tools/technologies could be mentioned"
+        "- Find opportunities to add specific frameworks, languages, or methodologies"
+        "- Recommend paraphrasing that naturally integrates missing skills into existing accomplishments"
         ""
         "SKILLS ANALYSIS INTEGRATION:"
         "When skills analysis data is provided, use it for:"
@@ -253,7 +277,13 @@ rating_agent = LlmAgent(
     ),
     output_schema=RatingResponse,  # LlmAgent requires Pydantic BaseModel
     instruction=(
-        "You are an expert resume rating and improvement specialist. You MUST respond with structured JSON data matching the exact schema provided."
+        "You are an expert resume-job alignment specialist. Your PRIMARY GOAL is to make resumes better aligned with job descriptions through strategic paraphrasing and content optimization."
+        ""
+        "CORE FOCUS: RESUME-JOB ALIGNMENT"
+        "- Analyze how current resume descriptions can be paraphrased to match job requirements"
+        "- Identify experiences that can naturally incorporate missing skills from the job description"
+        "- Provide concrete before/after examples showing better alignment and skill integration"
+        "- Focus on keyword integration, missing skill incorporation, and experience enhancement"
         ""
         "REQUIRED STRUCTURED OUTPUT:"
         "1. DETAILED RATINGS - For each category (1-10 scale):"
@@ -262,33 +292,39 @@ rating_agent = LlmAgent(
         "   - skills_match: score, match_percentage, matching_skills array, missing_skills array"
         "   - experience_relevance: score, justification, gaps array"
         ""
-        "2. PRIORITY RECOMMENDATIONS - Array of up to 5 recommendations:"
+        "2. PRIORITY RECOMMENDATIONS - Array of up to 5 recommendations (FOCUS ON ALIGNMENT):"
         "   - priority: 'High', 'Medium', or 'Low'"
-        "   - title: Brief recommendation title"
-        "   - description: Detailed explanation"
-        "   - specific_example: Exact text changes or additions"
+        "   - title: Brief recommendation title focused on job alignment"
+        "   - description: How this improves job match"
+        "   - specific_example: General improvement guidance"
+        "   - paraphrasing_suggestion: CRITICAL - Provide specific before/after paraphrasing:"
+        "     * current_text: Exact text from resume that needs improvement"
+        "     * suggested_text: Rewritten text that better aligns with job requirements and naturally incorporates relevant missing skills when applicable"
+        "     * job_requirement_reference: Specific job requirement this addresses (include missing skills being integrated)"
+        "     * alignment_reason: Detailed explanation of why this improves job fit and which missing skills were naturally integrated"
+        "- PROFESSIONAL SUMMARY: Not needed. Do not recommend or suggest adding this section."
         ""
-        "3. IMPROVED RESUME - Complete structured resume:"
-        "   - contact_info: Full contact section as string"
-        "   - professional_summary: Enhanced summary as string"
-        "   - work_experience: Array of improved job descriptions"
-        "   - education: Education section as string"
-        "   - skills: Array of skill items"
-        "   - additional_sections: Array of other sections (certifications, etc.)"
+        "3. IMPROVED RESUME - Complete structured resume with job-aligned language:"
+        "   - All sections should use terminology and framing that matches the job description"
+        "   - Integrate job-specific keywords naturally"
+        "   - Maintain factual accuracy while optimizing for alignment"
         ""
-        "SKILLS ANALYSIS INTEGRATION:"
-        "When skills analysis data is provided:"
-        "- Use exact match_percentage for skills_match score calculation"
-        "- Include matching_skills in the matching_skills array"
-        "- Include missing_skills in the missing_skills array"
-        "- Reference specific skills data in justifications"
+        "STAR FORMAT REQUIREMENTS:"
+        "Transform experience descriptions to follow STAR structure:"
+        "- Situation: Set context (e.g., 'At my internship, team faced declining user engagement')"
+        "- Task: Define role (e.g., 'I was responsible for analyzing user behavior')"
+        "- Action: Describe actions (e.g., 'Conducted A/B testing on design layouts')"
+        "- Result: Show measurable impact (e.g., 'Increased user engagement by 30%')"
+        "Prioritize recommendations that add missing STAR elements."
         ""
-        "RESUME IMPROVEMENT RULES:"
-        "- Keep all original contact info and factual details"
-        "- Enhance content to highlight matching_skills"
-        "- Naturally integrate missing_skills into descriptions"
-        "- DO NOT add fake experience or positions"
-        "- Focus on quantifiable achievements and metrics"
+        "PARAPHRASING STRATEGY:"
+        "- Match job description terminology exactly (e.g., 'implemented' → 'developed' if JD uses 'developed')"
+        "- Mirror job requirement phrasing in experience descriptions"
+        "- Use job-specific technical terms and industry language"
+        "- Quantify achievements using metrics valued in the job posting"
+        "- Frame responsibilities to match job description priorities"
+        "- Transform weak bullets into STAR-structured, concise paragraphs with measurable results (no category labels)"
+        "- SKILL INTEGRATION: When experience relates to missing skills, naturally incorporate those skills into the description"
         ""
         "OUTPUT FORMAT: Return ONLY valid JSON matching the schema - no markdown, no explanations."
     ),

@@ -90,7 +90,7 @@ def analyze_resume_file(content: bytes, file_extension: str) -> Dict[str, Any]:
         """
         
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])]
         )
         
@@ -130,13 +130,13 @@ def analyze_job_description(job_description: str) -> Dict[str, Any]:
         - Preferred qualifications
         - Experience requirements
         - Industry and company context
-        - Salary/benefits if mentioned
+       
 
         Be specific about requirements vs preferences.
         """
         
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])]
         )
         
@@ -186,7 +186,7 @@ def compare_resume_to_job(resume_analysis: Dict[str, Any], job_analysis: Dict[st
         """
         
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])]
         )
         
@@ -278,7 +278,7 @@ def analyze_skills_matching(resume_text: str, job_description: str) -> Dict[str,
         """
         
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
             config=types.GenerateContentConfig(max_output_tokens=4000)
         )
