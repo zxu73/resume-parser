@@ -1,6 +1,6 @@
 # mypy: disable - error - code = "no-untyped-def,misc"
 import pathlib
-from fastapi import FastAPI, Response, Request, File, UploadFile, HTTPException
+from fastapi import FastAPI, Response, Request, File, UploadFile, HTTPException, Depends, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from .agent import evaluation_agent, rating_agent
@@ -9,12 +9,21 @@ import json
 import asyncio
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
+from datetime import timedelta
 
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from typing import Dict, Any
 import uuid
+
+# Import authentication modules
+from .database import get_db, create_tables
+from .auth import create_access_token, get_current_active_user, ACCESS_TOKEN_EXPIRE_MINUTES
+from .user_service import UserService
+from .schemas import UserCreate, LoginRequest, TokenResponse, UserResponse, MessageResponse
+from .models import User
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # --- ADK Setup ---
 # This follows the modern programmatic pattern for running an ADK agent.
@@ -40,6 +49,9 @@ class ResumeEvaluationRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create database tables on startup
+    await create_tables()
+    
     # Create the default session on startup
     await session_service.create_session(
         app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID
@@ -63,6 +75,75 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# === AUTHENTICATION ENDPOINTS ===
+
+@app.post("/auth/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register(user_create: UserCreate, db: AsyncSession = Depends(get_db)):
+    """Register a new user account."""
+    try:
+        user = await UserService.create_user(db, user_create)
+        await db.commit()
+        return user
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create user account"
+        )
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(login_request: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """Authenticate user and return access token."""
+    user = await UserService.authenticate_user(db, login_request.email, login_request.password)
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Account is deactivated"
+        )
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": str(user.id)},
+        expires_delta=access_token_expires
+    )
+    
+    return TokenResponse(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Convert to seconds
+        user=user
+    )
+
+
+@app.get("/auth/me", response_model=UserResponse)
+async def get_current_user_info(current_user: User = Depends(get_current_active_user)):
+    """Get current authenticated user information."""
+    return current_user
+
+
+@app.get("/auth/protected", response_model=MessageResponse)
+async def protected_route(current_user: User = Depends(get_current_active_user)):
+    """Example protected route that requires authentication."""
+    return MessageResponse(
+        message=f"Hello {current_user.username}! You are authenticated.",
+        success=True
+    )
 
 # === RESUME ANALYSIS ENDPOINTS ===
 
@@ -242,6 +323,11 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
 
 # === CORE ENDPOINTS ONLY ===
 
+@app.get("/")
+async def root():
+    """Redirect to the frontend application."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/app")
 
 def create_frontend_router(build_dir="../frontend/dist"):
     """Creates a router to serve the React frontend.
