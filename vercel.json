@@ -1,81 +1,32 @@
 {
-  "version": 2,
-  "name": "resume-parser",
-  "builds": [
-    {
-      "src": "frontend/package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "buildCommand": "npm run build",
-        "outputDirectory": "dist"
-      }
-    },
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python",
-      "config": {
-        "installCommand": "cd backend && pip install -e ."
-      }
-    }
-  ],
-  "routes": [
-    {
-      "src": "/auth/(.*)",
-      "dest": "/api/index.py"
-    },
-    {
-      "src": "/upload-resume",
-      "dest": "/api/index.py"
-    },
-    {
-      "src": "/evaluate-resume",
-      "dest": "/api/index.py"
-    },
-    {
-      "src": "/api/(.*)",
-      "dest": "/api/index.py"
-    },
-    {
-      "src": "/app/(.*)",
-      "dest": "/frontend/dist/index.html"
-    },
-    {
-      "src": "/assets/(.*)",
-      "dest": "/frontend/dist/assets/$1"
-    },
-    {
-      "src": "/",
-      "dest": "/api/index.py"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/frontend/dist/index.html"
-    }
-  ],
+  "buildCommand": "cd frontend && npm run build",
+  "outputDirectory": "frontend/dist",
+  "installCommand": "cd frontend && npm install",
   "functions": {
-    "api/index.py": {
+    "api/*.py": {
       "runtime": "python3.11"
-    }
-  },
-  "env": {
-    "PYTHON_VERSION": "3.11",
-    "GEMINI_API_KEY": "@gemini_api_key",
-    "SUPABASE_URL": "@supabase_url",
-    "PGBOUNCER_URL": "@pgbouncer_url",
-    "MIGRATION_URL": "@migration_url",
-    "SECRET_KEY": "@secret_key",
-    "ACCESS_TOKEN_EXPIRE_MINUTES": "30",
-    "DATABASE_URL": "@database_url"
-  },
-  "build": {
-    "env": {
-      "PYTHON_VERSION": "3.11"
     }
   },
   "rewrites": [
     {
-      "source": "/app/(.*)",
-      "destination": "/frontend/dist/index.html"
+      "source": "/api/(.*)",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/auth/(.*)",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/upload-resume",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/evaluate-resume",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }

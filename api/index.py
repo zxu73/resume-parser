@@ -1,7 +1,6 @@
 """
 Vercel serverless function entry point for the FastAPI backend.
 This file serves as the main entry point for Vercel deployment.
-Uses pyproject.toml for dependency management.
 """
 
 import sys
@@ -9,12 +8,20 @@ import os
 
 # Add the backend source directory to the Python path
 backend_src = os.path.join(os.path.dirname(__file__), '..', 'backend', 'src')
-sys.path.insert(0, backend_src)
+if backend_src not in sys.path:
+    sys.path.insert(0, backend_src)
 
-from agent.app import app
+try:
+    from agent.app import app
+except ImportError as e:
+    print(f"Import error: {e}")
+    # Fallback minimal app for debugging
+    from fastapi import FastAPI
+    app = FastAPI()
+    
+    @app.get("/")
+    def root():
+        return {"message": "Backend import failed", "error": str(e)}
 
-# Vercel expects the app to be named 'handler' or 'app'
-handler = app
-
-# Also export as app for compatibility
-__all__ = ['handler', 'app']
+# Export the app for Vercel
+app = app
