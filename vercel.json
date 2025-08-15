@@ -3,9 +3,12 @@
   "outputDirectory": "frontend/dist",
   "installCommand": "cd frontend && npm install",
   "functions": {
-    "api/*.py": {
-      "runtime": "python3.11"
+    "api/index.py": {
+      "runtime": "@vercel/python"
     }
+  },
+  "env": {
+    "PYTHON_VERSION": "3.11"
   },
   "rewrites": [
     {
