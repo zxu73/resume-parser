@@ -78,7 +78,7 @@ export default function App() {
         const formData = new FormData();
         formData.append('file', selectedFile);
         
-        const uploadResponse = await fetch('http://localhost:8000/upload-resume', {
+        const uploadResponse = await fetch('/upload-resume', {
           method: 'POST',
           body: formData
         });
@@ -98,7 +98,7 @@ export default function App() {
       }
 
       // Call the main evaluation endpoint
-      const evaluationResponse = await fetch('http://localhost:8000/evaluate-resume', {
+      const evaluationResponse = await fetch('/evaluate-resume', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
