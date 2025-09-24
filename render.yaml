@@ -4,7 +4,7 @@ services:
     env: python
     buildCommand: |
       pip install -r backend/requirements.txt
-      cd frontend && npm install && npm run build
+      cd frontend && npm ci && npm run build
     startCommand: cd backend/src && uvicorn agent.app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GOOGLE_API_KEY
