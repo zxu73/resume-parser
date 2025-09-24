@@ -1,7 +1,7 @@
 import * as React from "react"
 
 // Use explicit relative path as a fallback for CI environments with strict resolvers
-import { cn } from "@/lib/utils"
+import { cn } from "@/lib/utils.ts"
 
 function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
   return (
