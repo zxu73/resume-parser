@@ -67,14 +67,17 @@ app = FastAPI(lifespan=lifespan, title="Resume Optimizer API", description="AI-p
 # Add CORS middleware for frontend development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ],  # Frontend dev servers
+    allow_origins=["*"],  # Allow all origins for production deployment
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files (built React frontend)
+import os
+frontend_dist_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "frontend", "dist")
+if os.path.exists(frontend_dist_path):
+    app.mount("/", StaticFiles(directory=frontend_dist_path, html=True), name="static")
 
 # === AUTHENTICATION ENDPOINTS ===
 
