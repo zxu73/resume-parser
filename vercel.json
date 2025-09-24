@@ -3,26 +3,20 @@
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/dist",
   "installCommand": "cd frontend && npm install",
-  "rewrites": [
+  "builds": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.py"
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(api|auth|upload-resume|evaluate-resume)(/.*)?",
+      "dest": "/api/index.py"
     },
     {
-      "source": "/auth/(.*)",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/upload-resume",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/evaluate-resume",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
+      "src": "/(.*)",
+      "dest": "/index.html"
     }
   ]
 }
