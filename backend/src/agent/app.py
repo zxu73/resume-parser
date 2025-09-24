@@ -73,11 +73,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files (built React frontend)
-import os
-frontend_dist_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "frontend", "dist")
-if os.path.exists(frontend_dist_path):
-    app.mount("/", StaticFiles(directory=frontend_dist_path, html=True), name="static")
+# Mount static files (built React frontend) - will be added at the end after all routes
 
 # === AUTHENTICATION ENDPOINTS ===
 
@@ -324,47 +320,21 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Resume evaluation failed: {str(e)}")
 
-# === CORE ENDPOINTS ONLY ===
+# === FRONTEND STATIC FILES ===
+# Mount React frontend after all API routes (must be last)
 
-@app.get("/")
-async def root():
-    """Redirect to the frontend application."""
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/app")
+import os
+from pathlib import Path
 
-def create_frontend_router(build_dir="../frontend/dist"):
-    """Creates a router to serve the React frontend.
+frontend_dist_path = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
 
-    Args:
-        build_dir: Path to the React build directory relative to this file.
-
-    Returns:
-        A Starlette application serving the frontend.
-    """
-    build_path = pathlib.Path(__file__).parent.parent.parent / build_dir
-
-    if not build_path.is_dir() or not (build_path / "index.html").is_file():
-        print(
-            f"WARN: Frontend build directory not found or incomplete at {build_path}. Serving frontend will likely fail."
-        )
-        # Return a dummy router if build isn't ready
-        from starlette.routing import Route
-
-        async def dummy_frontend(request):
-            return Response(
-                "Frontend not built. Run 'npm run build' in the frontend directory.",
-                media_type="text/plain",
-                status_code=503,
-            )
-
-        return Route("/{path:path}", endpoint=dummy_frontend)
-
-    return StaticFiles(directory=build_path, html=True)
-
-
-# Mount the frontend under /app
-app.mount(
-    "/app",
-    create_frontend_router(),
-    name="frontend",
-)
+if frontend_dist_path.exists() and (frontend_dist_path / "index.html").exists():
+    # Mount static files at root - this catches all non-API routes
+    app.mount("/", StaticFiles(directory=frontend_dist_path, html=True), name="static")
+    print(f"✅ Frontend mounted from: {frontend_dist_path}")
+else:
+    print(f"⚠️ Frontend build not found at: {frontend_dist_path}")
+    
+    @app.get("/")
+    async def root():
+        return {"message": "Resume Analyzer API", "status": "Backend running", "note": "Frontend build not found"}
