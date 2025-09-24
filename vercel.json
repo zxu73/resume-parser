@@ -5,11 +5,10 @@
   "installCommand": "cd frontend && npm install",
   "functions": {
     "api/index.py": {
-      "runtime": "python3.12"
+      "runtime": "python3.9"
     }
   },
   "env": {
-    "PYTHON_VERSION": "3.12",
     "NODE_VERSION": "20.x"
   },
   "rewrites": [
