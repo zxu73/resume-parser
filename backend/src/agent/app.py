@@ -3,7 +3,7 @@ import pathlib
 from fastapi import FastAPI, Response, Request, File, UploadFile, HTTPException, Depends, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from .agent import evaluation_agent, rating_agent
+from .agent import evaluation_agent, rating_agent, experience_optimizer_agent
 from .tools import analyze_resume_file
 import json
 import asyncio
@@ -25,9 +25,10 @@ SESSION_ID = "default_session"
 # 1. Set up session management
 session_service = InMemorySessionService()
 
-# 2. Create separate runners for both agents
+# 2. Create separate runners for all agents
 evaluation_runner = Runner(agent=evaluation_agent, app_name=APP_NAME, session_service=session_service)
 rating_runner = Runner(agent=rating_agent, app_name=APP_NAME, session_service=session_service)
+optimizer_runner = Runner(agent=experience_optimizer_agent, app_name=APP_NAME, session_service=session_service)
 
 # Store resume analysis results temporarily
 resume_analyses: Dict[str, Dict[str, Any]] = {}
@@ -38,11 +39,27 @@ class ResumeEvaluationRequest(BaseModel):
     resume_text: str
     job_description: str
 
+class ExperienceItem(BaseModel):
+    title: str
+    company: str
+    duration: str
+    description: str
+    skills: list[str] = []
+
+class SmartResumeRequest(BaseModel):
+    resume_text: str
+    job_description: str
+    pool_experiences: list[ExperienceItem] = []  # Optional pool of additional experiences
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create the default in-memory session on startup
+    # Create all required in-memory sessions on startup
     await session_service.create_session(
         app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID
+    )
+    # Session for optimizer agent
+    await session_service.create_session(
+        app_name=APP_NAME, user_id=USER_ID, session_id=USER_ID + "_optimizer"
     )
     yield
     # No cleanup needed for in-memory session service
@@ -63,7 +80,6 @@ app.add_middleware(
 
 # Mount static files (built React frontend) - will be added at the end after all routes
 
-# (All auth/database endpoints removed per requirement: no database)
 
 # === RESUME ANALYSIS ENDPOINTS ===
 
@@ -240,6 +256,84 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Resume evaluation failed: {str(e)}")
+
+@app.post("/analyze-experience-swaps")
+async def analyze_experience_swaps(request: SmartResumeRequest):
+    """
+    Step 1: Analyze and recommend experience swaps without applying them.
+    Returns recommendations for user review.
+    """
+    try:
+        if not request.resume_text.strip():
+            raise HTTPException(status_code=400, detail="Resume text cannot be empty")
+        
+        if not request.job_description.strip():
+            raise HTTPException(status_code=400, detail="Job description cannot be empty")
+        
+        # If no pool experiences provided, fall back to regular evaluation
+        if not request.pool_experiences:
+            return await evaluate_resume_directly(ResumeEvaluationRequest(
+                resume_text=request.resume_text,
+                job_description=request.job_description
+            ))
+        
+        # Step 1: Run optimizer agent to compare and recommend swaps
+        optimizer_prompt = f"""
+        ORIGINAL RESUME:
+        {request.resume_text}
+
+        JOB DESCRIPTION:
+        {request.job_description}
+
+        POOL OF ADDITIONAL EXPERIENCES:
+        {json.dumps([{
+            'title': exp.title,
+            'company': exp.company,
+            'duration': exp.duration,
+            'description': exp.description,
+            'skills': exp.skills
+        } for exp in request.pool_experiences], indent=2)}
+
+        TASK:
+        1. Extract work experiences from the ORIGINAL RESUME
+        2. Score each resume experience's relevance to the job (0-100)
+        3. For each resume experience, find the best pool experience that could replace it
+        4. Score that pool experience's relevance (0-100)
+        5. Recommend replacement ONLY if pool experience is 20+ points better
+        6. Provide detailed reasoning for each decision
+
+        Remember: Be conservative. Only swap when significantly better.
+        """
+        
+        optimizer_content = types.Content(
+            role="user", parts=[types.Part(text=optimizer_prompt)]
+        )
+        
+        optimization_result = ""
+        async for event in optimizer_runner.run_async(
+            user_id=USER_ID, session_id=USER_ID + "_optimizer", new_message=optimizer_content
+        ):
+            if event.is_final_response() and event.content and event.content.parts:
+                optimization_result = event.content.parts[0].text
+        
+        try:
+            optimization_data = json.loads(optimization_result)
+        except json.JSONDecodeError:
+            optimization_data = {"comparisons": [], "swaps_made": 0}
+        
+        # Return recommendations for user review (don't apply yet)
+        return {
+            "success": True,
+            "optimization_analysis": optimization_data,
+            "workflow_type": "experience_analysis",
+            "message": f"Found {optimization_data.get('swaps_made', 0)} recommended swap(s). Review and accept to apply.",
+            "requires_user_approval": True
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Smart optimization failed: {str(e)}")
 
 # === FRONTEND STATIC FILES ===
 # Mount React frontend after all API routes (must be last)

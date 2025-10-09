@@ -72,7 +72,7 @@ ${resume.education}
 SKILLS
 ${resume.skills.join(', ')}
 
-${resume.additional_sections.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additional_sections.join('\n\n')}` : ''}`;
+${resume.additional_sections?.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additional_sections.join('\n\n')}` : ''}`;
 
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -142,20 +142,20 @@ ${resume.additional_sections.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additio
         <h2 className="text-xl font-bold mb-4">Skills Analysis</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
-            <h3 className="font-semibold text-green-700 mb-3">Matching Skills ({evaluation.matching_skills.length})</h3>
+            <h3 className="font-semibold text-green-700 mb-3">Matching Skills ({evaluation.matching_skills?.length || 0})</h3>
             <div className="flex flex-wrap gap-2">
-              {evaluation.matching_skills.map((skill, index) => (
+              {evaluation.matching_skills?.map((skill, index) => (
                 <Badge key={index} className="bg-green-100 text-green-800">{skill}</Badge>
-              ))}
+              )) || <span className="text-gray-500">No matching skills found</span>}
             </div>
           </div>
           
           <div>
-            <h3 className="font-semibold text-red-700 mb-3">Missing Skills ({evaluation.missing_skills.length})</h3>
+            <h3 className="font-semibold text-red-700 mb-3">Missing Skills ({evaluation.missing_skills?.length || 0})</h3>
             <div className="flex flex-wrap gap-2">
-              {evaluation.missing_skills.map((skill, index) => (
+              {evaluation.missing_skills?.map((skill, index) => (
                 <Badge key={index} className="bg-red-100 text-red-800">{skill}</Badge>
-              ))}
+              )) || <span className="text-gray-500">No missing skills identified</span>}
             </div>
           </div>
         </div>
@@ -166,24 +166,24 @@ ${resume.additional_sections.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additio
         <Card className="p-6">
           <h2 className="text-xl font-bold mb-4 text-green-700">Strengths</h2>
           <ul className="space-y-2">
-            {evaluation.strengths.map((strength, index) => (
+            {evaluation.strengths?.map((strength, index) => (
               <li key={index} className="flex items-start">
                 <span className="text-green-500 mr-2">✓</span>
                 <span className="text-gray-700">{strength}</span>
               </li>
-            ))}
+            )) || <li className="text-gray-500">No strengths identified</li>}
           </ul>
         </Card>
 
         <Card className="p-6">
           <h2 className="text-xl font-bold mb-4 text-red-700">Areas for Improvement</h2>
           <ul className="space-y-2">
-            {evaluation.weaknesses.map((weakness, index) => (
+            {evaluation.weaknesses?.map((weakness, index) => (
               <li key={index} className="flex items-start">
                 <span className="text-red-500 mr-2">⚠</span>
                 <span className="text-gray-700">{weakness}</span>
               </li>
-            ))}
+            )) || <li className="text-gray-500">No weaknesses identified</li>}
           </ul>
         </Card>
       </div>
@@ -192,7 +192,7 @@ ${resume.additional_sections.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additio
       <Card className="p-6">
         <h2 className="text-xl font-bold mb-4">Priority Recommendations - Job Alignment Focus</h2>
         <div className="space-y-6">
-          {rating.priority_recommendations.map((rec, index) => (
+          {rating.priority_recommendations?.map((rec, index) => (
             <div key={index} className="border rounded-lg p-4 bg-gray-50">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="font-semibold">{rec.title}</h3>
@@ -251,7 +251,7 @@ ${resume.additional_sections.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additio
       </Card>
 
       {/* ATS Issues */}
-      {evaluation.ats_compatibility.issues.length > 0 && (
+      {evaluation.ats_compatibility?.issues?.length > 0 && (
         <Card className="p-6">
           <h2 className="text-xl font-bold mb-4">ATS Compatibility Issues</h2>
           <div className="space-y-3">
@@ -263,7 +263,7 @@ ${resume.additional_sections.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additio
             ))}
           </div>
           
-          {evaluation.ats_compatibility.recommendations.length > 0 && (
+          {evaluation.ats_compatibility.recommendations?.length > 0 && (
             <div className="mt-4">
               <h3 className="font-semibold mb-2">Recommendations:</h3>
               <ul className="space-y-1">

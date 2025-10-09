@@ -1,8 +1,0 @@
-{
-  "build": {
-    "command": "pip install -r requirements.txt || pip install -e ."
-  },
-  "deploy": {
-    "startCommand": "cd src && uvicorn agent.app:app --host 0.0.0.0 --port $PORT"
-  }
-}

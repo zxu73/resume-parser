@@ -90,7 +90,7 @@ def analyze_resume_file(content: bytes, file_extension: str) -> Dict[str, Any]:
         """
         
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])]
         )
         
@@ -136,7 +136,7 @@ def analyze_job_description(job_description: str) -> Dict[str, Any]:
         """
         
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])]
         )
         
@@ -186,7 +186,7 @@ def compare_resume_to_job(resume_analysis: Dict[str, Any], job_analysis: Dict[st
         """
         
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])]
         )
         
@@ -224,7 +224,7 @@ def extract_skills_from_text(text: str, context: str) -> List[str]:
         """
         
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
             config=types.GenerateContentConfig(max_output_tokens=2000)
         )
@@ -242,6 +242,7 @@ def calculate_match_percentage(matching_skills: List[str], job_skills: List[str]
     if not job_skills:
         return 0
     return int((len(matching_skills) / len(job_skills)) * 100)
+
 
 def analyze_skills_matching(resume_text: str, job_description: str) -> Dict[str, Any]:
     """
@@ -278,7 +279,7 @@ def analyze_skills_matching(resume_text: str, job_description: str) -> Dict[str,
         """
         
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
             config=types.GenerateContentConfig(max_output_tokens=4000)
         )
@@ -330,4 +331,75 @@ def analyze_skills_matching(resume_text: str, job_description: str) -> Dict[str,
             "match_percentage": 0,
             "summary": f"Skills analysis failed: {str(e)}",
             "error": str(e)
-        } 
+        }
+
+
+def analyze_experience_structure(resume_text: str) -> Dict[str, Any]:
+    """
+    Analyze the structure and quality of work experience descriptions.
+    
+    Args:
+        resume_text: The resume content
+        
+    Returns:
+        Dict with experience structure analysis
+    """
+    try:
+        prompt = f"""
+        Analyze the work experience section structure in this resume:
+
+        RESUME:
+        {resume_text}
+
+        Return JSON with:
+        {{
+            "total_experiences": 3,
+            "experiences_with_metrics": 2,
+            "experiences_with_action_verbs": 3,
+            "average_bullet_length": "medium",
+            "star_format_usage": "partial",
+            "structure_score": 7,
+            "strengths": ["Clear action verbs", "Includes metrics"],
+            "weaknesses": ["Some experiences lack results", "Inconsistent formatting"]
+        }}
+
+        Evaluate: action verbs, quantifiable results, STAR format, consistency.
+        """
+        
+        response = client.models.generate_content(
+            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            config=types.GenerateContentConfig(max_output_tokens=2000)
+        )
+        
+        response_text = response.text.strip()
+        
+        # Extract JSON from markdown code blocks
+        if "```json" in response_text:
+            start = response_text.find("```json") + 7
+            end = response_text.find("```", start)
+            response_text = response_text[start:end]
+        elif "```" in response_text:
+            start = response_text.find("```") + 3
+            end = response_text.find("```", start)
+            response_text = response_text[start:end]
+        
+        try:
+            result = json.loads(response_text)
+            return result
+        except json.JSONDecodeError:
+            # Fallback
+            return {
+                "total_experiences": resume_text.count("•") // 3 if "•" in resume_text else 2,
+                "structure_score": 6,
+                "summary": "Experience structure analysis (fallback mode)",
+                "fallback_used": True
+            }
+            
+    except Exception as e:
+        return {
+            "total_experiences": 0,
+            "structure_score": 0,
+            "summary": f"Experience analysis failed: {str(e)}",
+            "error": str(e)
+        }

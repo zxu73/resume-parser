@@ -14,12 +14,18 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      // Proxy API requests to the backend server
-      "/api": {
-        target: "http://127.0.0.1:8000", // Default backend address
+      // Proxy all API endpoints to backend server
+      "/upload-resume": {
+        target: "http://127.0.0.1:8000",
         changeOrigin: true,
-        // Optionally rewrite path if needed (e.g., remove /api prefix if backend doesn't expect it)
-        // rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+      "/evaluate-resume": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+      "/analyze-experience-swaps": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
       },
     },
   },

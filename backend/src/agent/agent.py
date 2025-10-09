@@ -73,7 +73,7 @@ class ImprovedResume(BaseModel):
 class RatingResponse(BaseModel):
     detailed_ratings: DetailedRatings
     priority_recommendations: List[PriorityRecommendation] = Field(..., max_length=5)
-    improved_resume: ImprovedResume
+    improved_resume: Optional[ImprovedResume] = None  # Optional - frontend applies recommendations to original
 
 # Define structured response schemas for UI integration (keeping for reference)
 EVALUATION_SCHEMA = {
@@ -267,6 +267,60 @@ evaluation_agent = LlmAgent(
     tools=[],  # Must be empty when using output_schema
 )
 
+# Experience comparison schema for smart replacement
+class ExperienceComparison(BaseModel):
+    resume_experience_index: int = Field(..., description="Index of experience in original resume")
+    resume_experience_title: str
+    should_replace: bool = Field(..., description="True if pool experience is better")
+    pool_experience_index: Optional[int] = Field(None, description="Index of pool experience to use if replacing")
+    replacement_reason: str = Field(..., description="Why this replacement improves job alignment")
+    relevance_score_resume: float = Field(..., ge=0, le=100)
+    relevance_score_pool: float = Field(..., ge=0, le=100)
+
+class SmartExperienceOptimization(BaseModel):
+    comparisons: List[ExperienceComparison]
+    swaps_made: int
+    optimization_summary: str
+
+# Third agent: Smart Experience Replacement Agent
+experience_optimizer_agent = LlmAgent(
+    name="experience_optimizer_agent",
+    model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
+    generate_content_config=types.GenerateContentConfig(
+        max_output_tokens=8000,
+        temperature=0.0,
+    ),
+    output_schema=SmartExperienceOptimization,
+    instruction=(
+        "You are an expert at optimizing resumes by strategically replacing experiences to improve job alignment."
+        ""
+        "TASK: Compare experiences from the original resume with experiences from the user's pool."
+        "Recommend 1-to-1 swaps ONLY when a pool experience is significantly better aligned with the job."
+        ""
+        "COMPARISON CRITERIA:"
+        "1. RELEVANCE TO JOB: Does the pool experience match job requirements better?"
+        "2. SKILL ALIGNMENT: Does it demonstrate more required skills?"
+        "3. RECENCY: Is it more recent and relevant?"
+        "4. IMPACT: Does it show stronger achievements/results?"
+        ""
+        "REPLACEMENT RULES:"
+        "- CONSERVATIVE APPROACH: Only replace if pool experience is CLEARLY better (20+ point relevance score difference)"
+        "- MAINTAIN COUNT: Never add or remove experiences - only swap 1-for-1"
+        "- PRESERVE STRUCTURE: Keep the same resume format and length"
+        "- STRATEGIC: Prioritize replacing weakest resume experiences with strongest pool experiences"
+        ""
+        "FOR EACH RESUME EXPERIENCE:"
+        "1. Score its relevance to the job (0-100)"
+        "2. Find the best matching pool experience and score it"
+        "3. Decide: Replace only if pool experience is significantly better"
+        "4. Provide clear reasoning for decision"
+        ""
+        "OUTPUT: For each resume experience, specify whether to keep or replace, and why."
+    ),
+    description="Intelligently swaps resume experiences with pool experiences when beneficial for job alignment.",
+    tools=[],
+)
+
 # Second agent: Resume Rating and Generation Agent
 rating_agent = LlmAgent(
     name="resume_rating_and_generation_agent",
@@ -277,56 +331,52 @@ rating_agent = LlmAgent(
     ),
     output_schema=RatingResponse,  # LlmAgent requires Pydantic BaseModel
     instruction=(
-        "You are an expert resume-job alignment specialist. Your PRIMARY GOAL is to make resumes better aligned with job descriptions through strategic paraphrasing and content optimization."
+        "You are an expert resume content specialist. Your ONLY job is to rephrase experience descriptions to better match job requirements."
         ""
-        "CORE FOCUS: RESUME-JOB ALIGNMENT"
-        "- Analyze how current resume descriptions can be paraphrased to match job requirements"
-        "- Identify experiences that can naturally incorporate missing skills from the job description"
-        "- Provide concrete before/after examples showing better alignment and skill integration"
-        "- Focus on keyword integration, missing skill incorporation, and experience enhancement"
         ""
-        "REQUIRED STRUCTURED OUTPUT:"
-        "1. DETAILED RATINGS - For each category (1-10 scale):"
-        "   - content_quality: score, justification, specific_issues array"
-        "   - ats_compatibility: score, justification, missing_keywords array, formatting_issues array"
-        "   - skills_match: score, match_percentage, matching_skills array, missing_skills array"
-        "   - experience_relevance: score, justification, gaps array"
+        "YOUR TASK: Provide analysis with:"
+        "1. Detailed ratings across 4 categories"
+        "2. ONLY recommendations for rephrasing experience descriptions (3-5 recommendations)"
         ""
-        "2. PRIORITY RECOMMENDATIONS - Array of up to 5 recommendations (FOCUS ON ALIGNMENT):"
-        "   - priority: 'High', 'Medium', or 'Low'"
-        "   - title: Brief recommendation title focused on job alignment"
-        "   - description: How this improves job match"
-        "   - specific_example: General improvement guidance"
-        "   - paraphrasing_suggestion: CRITICAL - Provide specific before/after paraphrasing:"
-        "     * current_text: Exact text from resume that needs improvement"
-        "     * suggested_text: Rewritten text that better aligns with job requirements and naturally incorporates relevant missing skills when applicable"
-        "     * job_requirement_reference: Specific job requirement this addresses (include missing skills being integrated)"
-        "     * alignment_reason: Detailed explanation of why this improves job fit and which missing skills were naturally integrated"
-        "- PROFESSIONAL SUMMARY: Not needed. Do not recommend or suggest adding this section."
+        "=== SECTION 1: DETAILED RATINGS (REQUIRED) ==="
+        "Provide scores (1-10) with detailed justification for:"
+        "- content_quality: Assess clarity, impact, and professionalism of experience descriptions"
+        "- ats_compatibility: Check keywords and ATS readability"
+        "- skills_match: Calculate match percentage, list matching/missing skills"
+        "- experience_relevance: Evaluate how well experiences align with job requirements"
         ""
-        "3. IMPROVED RESUME - Complete structured resume with job-aligned language:"
-        "   - All sections should use terminology and framing that matches the job description"
-        "   - Integrate job-specific keywords naturally"
-        "   - Maintain factual accuracy while optimizing for alignment"
+        "=== SECTION 2: PRIORITY RECOMMENDATIONS (REQUIRED) ==="
+        "Focus on providing SPECIFIC text improvements. For EACH recommendation include:"
         ""
-        "STAR FORMAT REQUIREMENTS:"
-        "Transform experience descriptions to follow STAR structure:"
-        "- Situation: Set context (e.g., 'At my internship, team faced declining user engagement')"
-        "- Task: Define role (e.g., 'I was responsible for analyzing user behavior')"
-        "- Action: Describe actions (e.g., 'Conducted A/B testing on design layouts')"
-        "- Result: Show measurable impact (e.g., 'Increased user engagement by 30%')"
-        "Prioritize recommendations that add missing STAR elements."
+        "- priority: High/Medium/Low (prioritize High for experience description improvements)"
+        "- title: Short actionable title"
+        "- description: What to improve and why it matters for job fit"
+        "- specific_example: General improvement guidance"
+        "- paraphrasing_suggestion: **CRITICAL - ALWAYS PROVIDE THIS FOR EXPERIENCE IMPROVEMENTS**"
+        "  * current_text: EXACT text from original resume (word-for-word match required)"
+        "  * suggested_text: Improved version that is:"
+        "    - 2-3 sentences maximum (40-60 words)"
+        "    - **MUST use STAR format** (Situation = what was the business context/problem, Task = what was your specific responsibility, Action = what technical steps did you take with specific tools/technologies, Result = what measurable impact did you achieve with numbers/percentages)"
+        "    - Write naturally without labels - weave the four STAR elements into flowing narrative sentences"
+        "    - Matches JD terminology exactly (same verbs, technical terms)"
+        "    - Includes 1-2 quantifiable metrics showing impact"
+        "    - Integrates missing skills where naturally relevant"
+        "    - Concise and impactful - every word adds value"
+        "  * job_requirement_reference: Specific JD requirement this addresses"
+        "  * alignment_reason: Detailed explanation of improvements made"
         ""
-        "PARAPHRASING STRATEGY:"
-        "- Match job description terminology exactly (e.g., 'implemented' → 'developed' if JD uses 'developed')"
-        "- Mirror job requirement phrasing in experience descriptions"
-        "- Use job-specific technical terms and industry language"
-        "- Quantify achievements using metrics valued in the job posting"
-        "- Frame responsibilities to match job description priorities"
-        "- Transform weak bullets into STAR-structured, concise paragraphs with measurable results (no category labels)"
-        "- SKILL INTEGRATION: When experience relates to missing skills, naturally incorporate those skills into the description"
+        "PARAPHRASING GUIDELINES - REPHRASE MORE IN STAR FORMAT:"
+        "- Transform EVERY experience into STAR format (2-3 impactful sentences, 40-60 words)"
+        "- STAR Structure: Situation/context → Task/your role → Action/what you did → Result/measurable outcomes"
+        "- NO labels like 'Situation:', 'Task:', etc. - weave naturally into narrative flow"
+        "- Use exact JD verbs (if JD says 'developed', use 'developed' not 'created')"
+        "- Include 1-2 concrete metrics per experience (%, numbers, scale, time saved)"
+        "- Naturally integrate missing skills where experiences relate to them"
+        "- Cut fluff - be direct and results-focused"
         ""
-        "OUTPUT FORMAT: Return ONLY valid JSON matching the schema - no markdown, no explanations."
+        "DO NOT recommend adding professional summary sections."
+        ""
+        "OUTPUT FORMAT: Return ONLY valid JSON matching RatingResponse schema. Set improved_resume to null (frontend will apply recommendations to original). No markdown, no code blocks."
     ),
     description="Specializes in resume rating, recommendations, and generating improved versions.",
     tools=[],  # Must be empty when using output_schema

@@ -2,12 +2,17 @@ import React, { useState, useRef } from 'react';
 import { Button } from './components/ui/button';
 import { Textarea } from './components/ui/textarea';
 import { AnalysisDashboard } from './components/AnalysisDashboard';
+import { ExperienceManager, Experience } from './components/ExperienceManager';
+import { SwapReview } from './components/SwapReview';
 import { AnalysisResult } from './types/analysis';
 
 export default function App() {
   // State management
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState('');
+  const [experiences, setExperiences] = useState<Experience[]>([]);
+  const [swapRecommendations, setSwapRecommendations] = useState<any>(null);
+  const [resumeText, setResumeText] = useState<string>('');
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,8 +102,188 @@ export default function App() {
         resumeText = uploadResult.analysis || `Resume analysis for ${selectedFile.name}`;
       }
 
-      // Call the main evaluation endpoint
-      const evaluationResponse = await fetch('/evaluate-resume', {
+      // Store resume text for later use
+      setResumeText(resumeText);
+
+      // If pool experiences provided, use two-step workflow
+      if (experiences.length > 0) {
+        // Step 1: Get swap recommendations
+        const analyzeResponse = await fetch('/analyze-experience-swaps', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            resume_text: resumeText,
+            job_description: jobDescription,
+            pool_experiences: experiences.map(exp => ({
+              title: exp.title,
+              company: exp.company,
+              duration: exp.duration,
+              description: exp.description,
+              skills: exp.skills
+            }))
+          })
+        });
+
+        if (!analyzeResponse.ok) {
+          let errorMessage = 'Analysis failed';
+          try {
+            const errorData = await analyzeResponse.json();
+            errorMessage = errorData.detail || errorMessage;
+          } catch (e) {
+            errorMessage = `Server error: ${analyzeResponse.status} ${analyzeResponse.statusText}`;
+          }
+          throw new Error(errorMessage);
+        }
+
+        let analyzeResult;
+        try {
+          analyzeResult = await analyzeResponse.json();
+        } catch (e) {
+          throw new Error('Invalid response from server. Please check if backend is running.');
+        }
+        
+        if (!analyzeResult.success) {
+          throw new Error(analyzeResult.message || 'Analysis failed');
+        }
+
+        // Show swap recommendations for user review
+        setSwapRecommendations(analyzeResult.optimization_analysis);
+      } else {
+        // No pool experiences - use regular evaluation
+        const evaluationResponse = await fetch('/evaluate-resume', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            resume_text: resumeText,
+            job_description: jobDescription
+          })
+        });
+
+      if (!evaluationResponse.ok) {
+        let errorMessage = 'Analysis failed';
+        try {
+          const errorData = await evaluationResponse.json();
+          errorMessage = errorData.detail || errorMessage;
+        } catch (e) {
+          // If JSON parsing fails, use status text
+          errorMessage = `Server error: ${evaluationResponse.status} ${evaluationResponse.statusText}`;
+        }
+        throw new Error(errorMessage);
+      }
+
+        let result;
+        try {
+          result = await evaluationResponse.json();
+        } catch (e) {
+          throw new Error('Invalid response from server. Please check if backend is running properly.');
+        }
+        
+        if (!result.success) {
+          throw new Error(result.message || 'Analysis failed');
+        }
+        
+        setAnalysisResult(result);
+      }
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Analysis failed');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // Handle accepting swaps
+  const handleAcceptSwaps = async () => {
+    if (!swapRecommendations || !resumeText) return;
+
+    setIsAnalyzing(true);
+    setError(null);
+
+    try {
+      // Apply swaps locally in the frontend
+      let modifiedResume = resumeText;
+      let swapsApplied = 0;
+
+      swapRecommendations.comparisons
+        .filter((c: any) => c.should_replace)
+        .forEach((comparison: any) => {
+          const poolExp = experiences[comparison.pool_experience_index];
+          const oldTitle = comparison.resume_experience_title;
+          
+          // Try to find and replace the experience by title
+          if (modifiedResume.includes(oldTitle)) {
+            // Find the experience block (from title to next double newline or title)
+            const titleIndex = modifiedResume.indexOf(oldTitle);
+            const afterTitle = modifiedResume.substring(titleIndex);
+            const endMatch = afterTitle.match(/\n\n|\n[A-Z][A-Z\s]+\n/);
+            const endIndex = endMatch ? titleIndex + endMatch.index! : modifiedResume.length;
+            
+            const newBlock = `${poolExp.title}\n${poolExp.company}\n${poolExp.duration}\n${poolExp.description}`;
+            
+            modifiedResume = modifiedResume.substring(0, titleIndex) + newBlock + modifiedResume.substring(endIndex);
+            swapsApplied++;
+          }
+        });
+
+      console.log(`Applied ${swapsApplied} swaps locally`);
+      
+      // Now call /evaluate-resume with modified resume
+      const response = await fetch('/evaluate-resume', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          resume_text: modifiedResume,
+          job_description: jobDescription
+        })
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Analysis failed';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.detail || errorMessage;
+        } catch (e) {
+          errorMessage = `Server error: ${response.status} ${response.statusText}`;
+        }
+        throw new Error(errorMessage);
+      }
+
+      let result;
+      try {
+        result = await response.json();
+      } catch (e) {
+        throw new Error('Invalid response from server. Please check if backend is running.');
+      }
+
+      if (!result.success) {
+        throw new Error(result.message || 'Analysis failed');
+      }
+
+      setAnalysisResult(result);
+      setSwapRecommendations(null); // Clear recommendations
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply swaps and analyze');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // Handle rejecting swaps (continue with original resume)
+  const handleRejectSwaps = async () => {
+    if (!resumeText) return;
+
+    setIsAnalyzing(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/evaluate-resume', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -109,21 +294,33 @@ export default function App() {
         })
       });
 
-      if (!evaluationResponse.ok) {
-        const errorData = await evaluationResponse.json();
-        throw new Error(errorData.detail || 'Analysis failed');
+      if (!response.ok) {
+        let errorMessage = 'Analysis failed';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.detail || errorMessage;
+        } catch (e) {
+          errorMessage = `Server error: ${response.status} ${response.statusText}`;
+        }
+        throw new Error(errorMessage);
       }
 
-      const result = await evaluationResponse.json();
-      
+      let result;
+      try {
+        result = await response.json();
+      } catch (e) {
+        throw new Error('Invalid response from server. Please check if backend is running.');
+      }
+
       if (!result.success) {
         throw new Error(result.message || 'Analysis failed');
       }
-      
+
       setAnalysisResult(result);
+      setSwapRecommendations(null); // Clear recommendations
 
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Analysis failed');
+      setError(err instanceof Error ? err.message : 'Failed to analyze');
     } finally {
       setIsAnalyzing(false);
     }
@@ -133,6 +330,9 @@ export default function App() {
   const resetForm = () => {
     setSelectedFile(null);
     setJobDescription('');
+    setExperiences([]);
+    setSwapRecommendations(null);
+    setResumeText('');
     setAnalysisResult(null);
     setIsAnalyzing(false);
     setError(null);
@@ -191,6 +391,26 @@ export default function App() {
         </div>
       </div>
 
+      {/* Experience Pool Manager */}
+      <div style={{ marginBottom: '20px' }}>
+        <h2>3. Additional Experiences (Optional)</h2>
+        <div style={{ 
+          backgroundColor: '#e3f2fd', 
+          padding: '15px', 
+          borderRadius: '8px', 
+          marginBottom: '15px',
+          fontSize: '14px'
+        }}>
+          <strong>💡 Smart Feature:</strong> Add all your work experiences here. 
+          Our AI will automatically select the best ones that match the job and 
+          ensure your resume fits on 1 page by removing less relevant experiences.
+        </div>
+        <ExperienceManager 
+          experiences={experiences}
+          onExperiencesChange={setExperiences}
+        />
+      </div>
+
       {/* Action Buttons */}
       <div style={{ marginBottom: '30px' }}>
         <Button
@@ -217,14 +437,39 @@ export default function App() {
           marginBottom: '20px'
         }}>
           <h3>Analysis in Progress...</h3>
-          <p>AI agents are analyzing your resume. This may take a minute.</p>
+          {experiences.length > 0 ? (
+            <div>
+              <p><strong>🧠 Smart Optimization Mode Active</strong></p>
+              <p>AI is comparing your {experiences.length} pool experience(s) with resume experiences...</p>
+              <p style={{ fontSize: '14px', marginTop: '10px' }}>
+                ✓ Step 1: Analyzing relevance scores...<br/>
+                ✓ Step 2: Deciding optimal swaps...<br/>
+                ✓ Step 3: Rephrasing for job alignment...
+              </p>
+            </div>
+          ) : (
+            <p>AI agents are analyzing your resume. This may take a minute.</p>
+          )}
+        </div>
+      )}
+
+      {/* Swap Review (Step 1 results) */}
+      {swapRecommendations && !isAnalyzing && (
+        <div>
+          <h2>4. Review Experience Swaps</h2>
+          <SwapReview
+            comparisons={swapRecommendations.comparisons || []}
+            poolExperiences={experiences}
+            onAcceptAll={handleAcceptSwaps}
+            onReject={handleRejectSwaps}
+          />
         </div>
       )}
 
       {/* Results */}
-      {analysisResult && (
+      {analysisResult && !swapRecommendations && (
         <div>
-          <h2>3. Analysis Results</h2>
+          <h2>4. Analysis Results</h2>
           
           <div className="mt-6">
             {analysisResult.structured_evaluation && analysisResult.structured_rating ? (
@@ -234,9 +479,9 @@ export default function App() {
               />
             ) : (
               <div className="p-6 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <h3 className="font-semibold text-yellow-800 mb-2">Structured Data Not Available</h3>
+                <h3 className="font-semibold text-yellow-800 mb-2">Analysis Data Unavailable</h3>
                 <p className="text-yellow-700">
-                  The analysis system is not properly configured with schema support. Please contact support.
+                  {analysisResult.message || 'Unable to retrieve complete analysis. Please try again.'}
                 </p>
               </div>
             )}
