@@ -128,6 +128,7 @@ async def upload_resume(file: UploadFile = File(...)):
             "filename": file.filename,
             "file_size": len(content),
             "analysis": analysis_result.get("analysis", ""),
+            "extracted_text": analysis_result.get("extracted_text", ""),  # The actual resume text
             "message": "Resume uploaded and analyzed successfully"
         }
         
@@ -203,13 +204,20 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
 
         SUPPORTING DATA:
         SKILLS ANALYSIS: {skills_analysis}
-        ORIGINAL RESUME: {request.resume_text}
         JOB DESCRIPTION: {request.job_description}
+
+        ==================== ORIGINAL RESUME TEXT (FOR EXACT TEXT EXTRACTION) ====================
+        IMPORTANT: When creating paraphrasing suggestions, you MUST copy text from this resume EXACTLY.
+        Do NOT paraphrase, improve, or modify the current_text - copy it character-by-character.
+
+        {request.resume_text}
+
+        ==================== END OF RESUME TEXT ====================
 
         INSTRUCTIONS:
         - Use the evaluation report findings as your primary source for ratings
         - Reference specific issues and strengths mentioned in the evaluation
-        - Create improved resume that addresses the gaps identified in the evaluation
+        - For paraphrasing_suggestion.current_text: Copy text EXACTLY from the resume above
         - Use skills analysis data for quantified insights (match_percentage, missing_skills)
         """
         
@@ -239,10 +247,31 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         try:
             rating_data = json.loads(rating_results)
             print("DEBUG: Successfully parsed rating JSON")
+            
+            # Validate paraphrasing suggestions
+            if "priority_recommendations" in rating_data:
+                validated_count = 0
+                for rec in rating_data["priority_recommendations"]:
+                    if "paraphrasing_suggestion" in rec and rec["paraphrasing_suggestion"]:
+                        current_text = rec["paraphrasing_suggestion"].get("current_text", "")
+                        if current_text and current_text in request.resume_text:
+                            validated_count += 1
+                        else:
+                            print(f"WARNING: Paraphrasing suggestion text not found in resume: {current_text[:100]}...")
+                print(f"DEBUG: Validated {validated_count}/{len(rating_data['priority_recommendations'])} paraphrasing suggestions")
+                
         except json.JSONDecodeError as e:
             print(f"DEBUG: Failed to parse rating JSON: {e}")
             # Fallback to original text format
             rating_data = {"raw_text": rating_results}
+        
+        # Ensure skills analysis data is included in evaluation response
+        if "matching_skills" not in evaluation_data or not evaluation_data.get("matching_skills"):
+            evaluation_data["matching_skills"] = skills_analysis.get("matching_skills", [])
+        if "missing_skills" not in evaluation_data or not evaluation_data.get("missing_skills"):
+            evaluation_data["missing_skills"] = skills_analysis.get("missing_skills", [])
+        if "job_match_percentage" not in evaluation_data or not evaluation_data.get("job_match_percentage"):
+            evaluation_data["job_match_percentage"] = skills_analysis.get("match_percentage", 0)
         
         return {
             "success": True,

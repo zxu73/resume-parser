@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Card } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -7,6 +7,7 @@ import { StructuredEvaluation, StructuredRating } from '../types/analysis';
 interface AnalysisDashboardProps {
   evaluation: StructuredEvaluation;
   rating: StructuredRating;
+  originalResumeText?: string;
 }
 
 const ScoreBar: React.FC<{ score: number; maxScore: number; label: string }> = ({ score, maxScore, label }) => {
@@ -47,7 +48,14 @@ const PriorityIcon: React.FC<{ priority: string }> = ({ priority }) => {
   );
 };
 
-export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation, rating }) => {
+export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation, rating, originalResumeText }) => {
+  // Debug: Log when originalResumeText prop changes
+  useEffect(() => {
+    console.log('AnalysisDashboard - originalResumeText prop updated');
+    console.log('  Length:', originalResumeText?.length || 0);
+    console.log('  First 200 chars:', originalResumeText?.substring(0, 200) || 'N/A');
+  }, [originalResumeText]);
+
   // Handle fallback for structured data
   if (!evaluation || !rating) {
     return (
@@ -59,28 +67,179 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation
     );
   }
 
+  // Helper function to find text by keywords
+  const findTextByKeywords = (resumeText: string, searchText: string): { found: boolean; startIndex: number; endIndex: number; extractedText: string } => {
+    // First try exact match
+    const exactIndex = resumeText.indexOf(searchText);
+    if (exactIndex !== -1) {
+      return {
+        found: true,
+        startIndex: exactIndex,
+        endIndex: exactIndex + searchText.length,
+        extractedText: searchText
+      };
+    }
+
+    // If exact match fails, try keyword-based matching
+    // Extract meaningful keywords from the search text
+    const keywords = searchText.toLowerCase()
+      .split(/\s+/)
+      .filter(w => w.length > 3 && !['the', 'and', 'for', 'with', 'using', 'from', 'that', 'this', 'into'].includes(w))
+      .slice(0, 5); // Use first 5 meaningful words
+    
+    if (keywords.length < 2) {
+      return { found: false, startIndex: -1, endIndex: -1, extractedText: '' };
+    }
+    
+    // Split resume into lines/bullets
+    const lines = resumeText.split('\n');
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      const lineLower = line.toLowerCase();
+      
+      // Check if this line contains most of the keywords
+      const matchCount = keywords.filter(keyword => lineLower.includes(keyword)).length;
+      const matchRatio = matchCount / keywords.length;
+      
+      if (matchRatio >= 0.6 && line.length > 20) {
+        // Found a likely match! Calculate its position in the full text
+        const precedingText = lines.slice(0, i).join('\n');
+        const startIndex = precedingText.length + (i > 0 ? 1 : 0); // +1 for newline
+        const endIndex = startIndex + line.length;
+        
+        return {
+          found: true,
+          startIndex,
+          endIndex,
+          extractedText: line
+        };
+      }
+    }
+    
+    return { found: false, startIndex: -1, endIndex: -1, extractedText: '' };
+  };
+
   const downloadImprovedResume = () => {
-    const resume = rating.improved_resume;
-    const content = `${resume.contact_info}
+    if (!originalResumeText) {
+      alert('Original resume text not available. Cannot generate improved resume.');
+      return;
+    }
 
-WORK EXPERIENCE
-${resume.work_experience.join('\n\n')}
+    // Debug: Check what we're working with
+    console.log('Download - Original resume text length:', originalResumeText.length);
+    console.log('Download - First 200 chars of original:', originalResumeText.substring(0, 200));
+    console.log('Download - Number of recommendations:', rating.priority_recommendations?.length || 0);
 
-EDUCATION
-${resume.education}
+    // Check if originalResumeText looks like an analysis report (common indicators)
+    if (originalResumeText.includes('Executive Summary') || 
+        originalResumeText.includes('Overall Score') ||
+        originalResumeText.includes('ANALYSIS') ||
+        (originalResumeText.includes('Resume') && originalResumeText.includes('analysis'))) {
+      console.error('WARNING: originalResumeText appears to be an analysis report, not the resume!');
+      alert('Error: The resume text appears to be an analysis report instead of the actual resume. Please re-upload your resume file.');
+      return;
+    }
 
-SKILLS
-${resume.skills.join(', ')}
+    // Start with the original resume text
+    let improvedText = originalResumeText;
 
-${resume.additional_sections?.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additional_sections.join('\n\n')}` : ''}`;
+    // Apply all paraphrasing suggestions from recommendations
+    if (rating.priority_recommendations) {
+      // First, collect all replacements with their positions
+      const replacements: Array<{
+        index: number;
+        current_text: string;
+        suggested_text: string;
+        startIndex: number;
+        endIndex: number;
+        extractedText: string;
+      }> = [];
 
-    const blob = new Blob([content], { type: 'text/plain' });
+      rating.priority_recommendations.forEach((rec, index) => {
+        if (rec.paraphrasing_suggestion) {
+          const { current_text, suggested_text } = rec.paraphrasing_suggestion;
+          console.log(`\nDownload - Finding Recommendation ${index + 1}:`);
+          console.log('  AI text:', current_text.substring(0, 100) + (current_text.length > 100 ? '...' : ''));
+          
+          // Try keyword-based matching (which tries exact first, then keywords)
+          const result = findTextByKeywords(improvedText, current_text);
+          
+          if (result.found && result.extractedText) {
+            const matchType = result.extractedText === current_text ? 'exact' : 'keyword';
+            console.log(`  ✓ Found ${matchType} match at position:`, result.startIndex, 'to', result.endIndex);
+            console.log('  Actual text:', result.extractedText.substring(0, 80) + '...');
+            replacements.push({
+              index,
+              current_text: result.extractedText, // Use ACTUAL text from resume
+              suggested_text,
+              startIndex: result.startIndex,
+              endIndex: result.endIndex,
+              extractedText: result.extractedText
+            });
+          } else {
+            console.log('  ✗ Text not found in resume - skipping');
+          }
+        }
+      });
+
+      // Sort replacements by position (DESCENDING - from end to start)
+      // This way, earlier positions don't shift when we apply later replacements
+      replacements.sort((a, b) => b.startIndex - a.startIndex);
+      
+      console.log(`\n=== Applying ${replacements.length} replacements in reverse order ===`);
+      
+      // Apply replacements from end to start
+      let replacementsApplied = 0;
+      replacements.forEach((replacement) => {
+        console.log(`\nApplying Recommendation ${replacement.index + 1}:`);
+        console.log('  Position:', replacement.startIndex, 'to', replacement.endIndex);
+        console.log('  Replacing:', replacement.extractedText.substring(0, 80) + '...');
+        console.log('  With:', replacement.suggested_text.substring(0, 80) + '...');
+        
+        const before = improvedText.substring(0, replacement.startIndex);
+        const after = improvedText.substring(replacement.endIndex);
+        improvedText = before + replacement.suggested_text + after;
+        
+        replacementsApplied++;
+        console.log('  ✓ Applied. New length:', improvedText.length);
+      });
+      
+      const replacementsFailed = rating.priority_recommendations.filter(r => r.paraphrasing_suggestion).length - replacementsApplied;
+      console.log(`\nDownload - Summary: ${replacementsApplied} applied, ${replacementsFailed} failed`);
+      
+      // Debug: Show a sample of changes
+      if (replacementsApplied > 0) {
+        console.log('\nDownload - Verifying changes were actually made:');
+        console.log('Original text length:', originalResumeText.length);
+        console.log('Improved text length:', improvedText.length);
+        console.log('Text actually changed:', originalResumeText !== improvedText);
+        
+        // Show first difference
+        for (let i = 0; i < Math.min(originalResumeText.length, improvedText.length); i++) {
+          if (originalResumeText[i] !== improvedText[i]) {
+            console.log(`First difference at position ${i}:`);
+            console.log('  Original:', originalResumeText.substring(Math.max(0, i - 50), i + 100));
+            console.log('  Improved:', improvedText.substring(Math.max(0, i - 50), i + 100));
+            break;
+          }
+        }
+      }
+    }
+
+    console.log('\nDownload - Final improved text length:', improvedText.length);
+    console.log('Download - First 300 chars of improved text:', improvedText.substring(0, 300));
+
+    // Create and download the file
+    const blob = new Blob([improvedText], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = 'improved-resume.txt';
     a.click();
     URL.revokeObjectURL(url);
+    
+    console.log('Download - File download triggered');
   };
 
   return (
@@ -289,9 +448,25 @@ ${resume.additional_sections?.length > 0 ? `ADDITIONAL SECTIONS\n${resume.additi
           <Button 
             variant="outline"
             onClick={() => {
-              const resume = rating.improved_resume;
-              const content = `${resume.contact_info}\n\nWORK EXPERIENCE\n${resume.work_experience.join('\n\n')}\n\nEDUCATION\n${resume.education}\n\nSKILLS\n${resume.skills.join(', ')}`;
-              navigator.clipboard.writeText(content);
+              if (!originalResumeText) {
+                alert('Original resume text not available.');
+                return;
+              }
+
+              // Apply all paraphrasing suggestions
+              let improvedText = originalResumeText;
+              if (rating.priority_recommendations) {
+                rating.priority_recommendations.forEach((rec) => {
+                  if (rec.paraphrasing_suggestion) {
+                    const { current_text, suggested_text } = rec.paraphrasing_suggestion;
+                    if (improvedText.includes(current_text)) {
+                      improvedText = improvedText.replace(current_text, suggested_text);
+                    }
+                  }
+                });
+              }
+
+              navigator.clipboard.writeText(improvedText);
               alert('Improved resume copied to clipboard!');
             }}
           >

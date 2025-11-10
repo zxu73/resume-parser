@@ -99,7 +99,21 @@ export default function App() {
           throw new Error(uploadResult.error || 'Resume analysis failed');
         }
         
-        resumeText = uploadResult.analysis || `Resume analysis for ${selectedFile.name}`;
+        // Use extracted_text (the actual resume content), not analysis (the report)
+        // Debug: Log what we're getting
+        console.log('Upload result:', {
+          has_extracted_text: !!uploadResult.extracted_text,
+          extracted_text_length: uploadResult.extracted_text?.length || 0,
+          has_analysis: !!uploadResult.analysis,
+          analysis_length: uploadResult.analysis?.length || 0
+        });
+        
+        if (!uploadResult.extracted_text || uploadResult.extracted_text.trim().length === 0) {
+          console.warn('WARNING: extracted_text is empty! Using analysis as fallback.');
+        }
+        
+        resumeText = uploadResult.extracted_text || uploadResult.analysis || `Resume analysis for ${selectedFile.name}`;
+        console.log('Resume text length:', resumeText.length, 'First 200 chars:', resumeText.substring(0, 200));
       }
 
       // Store resume text for later use
@@ -230,6 +244,12 @@ export default function App() {
         });
 
       console.log(`Applied ${swapsApplied} swaps locally`);
+      console.log('Modified resume length:', modifiedResume.length);
+      console.log('Modified resume first 200 chars:', modifiedResume.substring(0, 200));
+      
+      // Update resume text state with the modified resume
+      setResumeText(modifiedResume);
+      console.log('Resume text state updated with modified resume');
       
       // Now call /evaluate-resume with modified resume
       const response = await fetch('/evaluate-resume', {
@@ -476,6 +496,7 @@ export default function App() {
               <AnalysisDashboard 
                 evaluation={analysisResult.structured_evaluation}
                 rating={analysisResult.structured_rating}
+                originalResumeText={resumeText}
               />
             ) : (
               <div className="p-6 bg-yellow-50 border border-yellow-200 rounded-lg">
