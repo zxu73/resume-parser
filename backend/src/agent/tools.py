@@ -305,9 +305,36 @@ def analyze_skills_matching(resume_text: str, job_description: str) -> Dict[str,
             resume_skills = extract_skills_from_text(resume_text, "resume")
             job_skills = extract_skills_from_text(job_description, "job description")
             
-            # Find matching skills dynamically
-            matching_skills = [skill for skill in resume_skills if skill.lower() in [js.lower() for js in job_skills]]
-            missing_skills = [skill for skill in job_skills if skill.lower() not in [rs.lower() for rs in resume_skills]]
+            # Find matching skills dynamically with flexible matching
+            def skills_match(skill1: str, skill2: str) -> bool:
+                """Check if two skills match (exact, contains, or share keywords)"""
+                s1 = skill1.lower().strip()
+                s2 = skill2.lower().strip()
+                # Exact match
+                if s1 == s2:
+                    return True
+                # One contains the other (handles "React" vs "React.js")
+                if s1 in s2 or s2 in s1:
+                    return True
+                # Share significant words (handles abbreviations naturally)
+                words1 = set(w for w in s1.split() if len(w) > 2)
+                words2 = set(w for w in s2.split() if len(w) > 2)
+                if words1 and words2 and words1 & words2:
+                    return True
+                return False
+            
+            matching_skills = []
+            for resume_skill in resume_skills:
+                for job_skill in job_skills:
+                    if skills_match(resume_skill, job_skill):
+                        if resume_skill not in matching_skills:
+                            matching_skills.append(resume_skill)
+                        break
+            
+            missing_skills = []
+            for job_skill in job_skills:
+                if not any(skills_match(resume_skill, job_skill) for resume_skill in resume_skills):
+                    missing_skills.append(job_skill)
             
             # Calculate dynamic match percentage
             match_percentage = calculate_match_percentage(matching_skills, job_skills)
