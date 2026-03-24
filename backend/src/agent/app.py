@@ -195,7 +195,31 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
             # Fallback to original text format
             evaluation_data = {"raw_text": evaluation_report}
         
-        # Step 2: Rating Agent - Use evaluation report as primary source
+        # RAG: agent selects top K weak bullets → retrieve templates → inject into prompt
+        from .rag import (
+            select_weak_bullets_with_agent,
+            retrieve_examples_for_weak_bullets,
+            format_rag_for_rating_prompt,
+        )
+        missing_skills_for_rag = (
+            evaluation_data.get("missing_skills", [])
+            if isinstance(evaluation_data, dict) else []
+        )
+        weak_bullets = select_weak_bullets_with_agent(
+            resume_text=request.resume_text,
+            job_description=request.job_description,
+            missing_skills=missing_skills_for_rag,
+            top_k=7,
+        )
+        bullet_examples = retrieve_examples_for_weak_bullets(
+            weak_bullets=weak_bullets,
+            missing_skills=missing_skills_for_rag,
+            job_description=request.job_description,
+            k=3,
+        )
+        rag_block = format_rag_for_rating_prompt(bullet_examples, missing_skills_for_rag)
+
+        # Step 2: Rating Agent - receives weak bullets + RAG templates in prompt
         rating_prompt = f"""
         TASK: Base your ratings and improvements on the evaluation report from the first agent.
 
@@ -214,10 +238,14 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
 
         ==================== END OF RESUME TEXT ====================
 
+        {rag_block}
+
         INSTRUCTIONS:
         - Use the evaluation report findings as your primary source for ratings
-        - Reference specific issues and strengths mentioned in the evaluation
+        - Focus paraphrasing_suggestion on the PRE-SELECTED WEAK BULLETS listed above
+        - For each weak bullet, write suggested_text modeled on its strong templates
         - For paraphrasing_suggestion.current_text: Copy text EXACTLY from the resume above
+        - Do NOT copy metrics or technologies from templates the user has not demonstrated
         - Use skills analysis data for quantified insights (match_percentage, missing_skills)
         """
         
@@ -259,7 +287,8 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
                         else:
                             print(f"WARNING: Paraphrasing suggestion text not found in resume: {current_text[:100]}...")
                 print(f"DEBUG: Validated {validated_count}/{len(rating_data['priority_recommendations'])} paraphrasing suggestions")
-                
+
+
         except json.JSONDecodeError as e:
             print(f"DEBUG: Failed to parse rating JSON: {e}")
             # Fallback to original text format
