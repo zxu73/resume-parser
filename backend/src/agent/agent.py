@@ -1,274 +1,76 @@
 import os
+from pathlib import Path
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from google.adk.agents import LlmAgent
-from google.adk.tools import google_search
-from google.genai import types
+from google.adk.models.lite_llm import LiteLlm
+import litellm
 
-# Define Pydantic models for structured response schemas (ADK requirement)
+_BULLET_GUIDELINES = (Path(__file__).parent / "guidelines.md").read_text(encoding="utf-8")
 
-class SectionAnalysisItem(BaseModel):
-    score: float = Field(..., ge=1, le=10)
-    feedback: str
+litellm.api_key = os.getenv("OPENAI_API_KEY", "")
 
-class SectionAnalysis(BaseModel):
-    contact_info: SectionAnalysisItem
-    work_experience: SectionAnalysisItem
-    education: SectionAnalysisItem
-    skills: SectionAnalysisItem
+def _model() -> LiteLlm:
+    """Return a LiteLlm instance for the configured reasoning model."""
+    return LiteLlm(model=f"openai/{os.getenv('REASONING_MODEL', 'gpt-4o-mini')}")
 
-class ATSCompatibility(BaseModel):
-    score: float = Field(..., ge=1, le=10)
-    issues: List[str] = Field(default_factory=list)
-    recommendations: List[str] = Field(default_factory=list)
+# ── Evaluation Agent schema ──────────────────────────────────────────────
+
+class WeakBullet(BaseModel):
+    text: str = Field(..., description="Exact bullet text copied character-for-character from the resume")
+    reason: str = Field(..., description="Why this bullet is weak relative to the JD")
 
 class EvaluationResponse(BaseModel):
     executive_summary: str
     overall_score: float = Field(..., ge=1, le=10)
     job_match_percentage: float = Field(..., ge=0, le=100)
-    section_analysis: SectionAnalysis
     strengths: List[str]
     weaknesses: List[str]
     missing_skills: List[str]
     matching_skills: List[str]
-    ats_compatibility: ATSCompatibility
+    weak_bullets: List[WeakBullet] = Field(..., min_length=5, max_length=10)
+
+# ── Rating Agent schema ──────────────────────────────────────────────────
 
 class DetailedRating(BaseModel):
     score: float = Field(..., ge=1, le=10)
     justification: str
-    specific_issues: Optional[List[str]] = None
-    missing_keywords: Optional[List[str]] = None
-    formatting_issues: Optional[List[str]] = None
-    match_percentage: Optional[float] = None
-    matching_skills: Optional[List[str]] = None
-    missing_skills: Optional[List[str]] = None
-    gaps: Optional[List[str]] = None
 
 class DetailedRatings(BaseModel):
     content_quality: DetailedRating
-    ats_compatibility: DetailedRating
     skills_match: DetailedRating
     experience_relevance: DetailedRating
+
+class ParaphrasingSuggestion(BaseModel):
+    current_text: str = Field(..., description="Current text from the resume")
+    suggested_text: str = Field(
+        ...,
+        description="Improved bullet; must contain every string in keywords_added as a literal substring (exact spelling)",
+    )
+    keywords_added: List[str] = Field(
+        ...,
+        min_length=1,
+        description="Each entry must be copied EXACTLY from the MISSING SKILLS list in the user prompt; each must appear verbatim inside suggested_text",
+    )
+    job_requirement_reference: str = Field(..., description="Specific job requirement this addresses")
+    alignment_reason: str = Field(
+        ...,
+        description="Must only claim keywords that literally appear in suggested_text; name the exact strings from keywords_added",
+    )
 
 class PriorityRecommendation(BaseModel):
     priority: str = Field(..., pattern="^(High|Medium|Low)$")
     title: str
     description: str
     specific_example: str
-    paraphrasing_suggestion: Optional["ParaphrasingSuggestion"] = None
-
-class ParaphrasingSuggestion(BaseModel):
-    current_text: str = Field(..., description="Current text from the resume")
-    suggested_text: str = Field(..., description="Improved text aligned with job requirements")
-    job_requirement_reference: str = Field(..., description="Specific job requirement this addresses")
-    alignment_reason: str = Field(..., description="Why this change improves job alignment")
-
-class ImprovedResume(BaseModel):
-    contact_info: str
-    work_experience: List[str]
-    education: str
-    skills: List[str]
-    additional_sections: List[str] = Field(default_factory=list)
+    paraphrasing_suggestion: "ParaphrasingSuggestion"
 
 class RatingResponse(BaseModel):
     detailed_ratings: DetailedRatings
-    priority_recommendations: List[PriorityRecommendation] = Field(..., max_length=7)
-    improved_resume: Optional[ImprovedResume] = None  # Optional - frontend applies recommendations to original
+    priority_recommendations: List[PriorityRecommendation] = Field(..., min_length=5, max_length=8)
 
-# Define structured response schemas for UI integration (keeping for reference)
-EVALUATION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "executive_summary": {
-            "type": "string",
-            "description": "High-level summary of resume quality and job fit"
-        },
-        "overall_score": {
-            "type": "number",
-            "minimum": 1,
-            "maximum": 10,
-            "description": "Overall resume score out of 10"
-        },
-        "job_match_percentage": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 100,
-            "description": "Percentage match with job requirements"
-        },
-                    "section_analysis": {
-                "type": "object",
-                "properties": {
-                    "contact_info": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
-                    "work_experience": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
-                    "education": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}},
-                    "skills": {"type": "object", "properties": {"score": {"type": "number"}, "feedback": {"type": "string"}}}
-                }
-            },
-        "strengths": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "List of resume strengths"
-        },
-        "weaknesses": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "List of areas needing improvement"
-        },
-        "missing_skills": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Skills required by job but missing from resume"
-        },
-        "matching_skills": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Skills that match job requirements"
-        },
-        "ats_compatibility": {
-            "type": "object",
-            "properties": {
-                "score": {"type": "number", "minimum": 1, "maximum": 10},
-                "issues": {"type": "array", "items": {"type": "string"}},
-                "recommendations": {"type": "array", "items": {"type": "string"}}
-            }
-        }
-    },
-    "required": ["executive_summary", "overall_score", "job_match_percentage", "section_analysis", "strengths", "weaknesses", "ats_compatibility"]
-}
+# ── Experience Optimizer schema ──────────────────────────────────────────
 
-RATING_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "detailed_ratings": {
-            "type": "object",
-            "properties": {
-                "content_quality": {
-                    "type": "object",
-                    "properties": {
-                        "score": {"type": "number", "minimum": 1, "maximum": 10},
-                        "justification": {"type": "string"},
-                        "specific_issues": {"type": "array", "items": {"type": "string"}}
-                    }
-                },
-                "ats_compatibility": {
-                    "type": "object",
-                    "properties": {
-                        "score": {"type": "number", "minimum": 1, "maximum": 10},
-                        "justification": {"type": "string"},
-                        "missing_keywords": {"type": "array", "items": {"type": "string"}},
-                        "formatting_issues": {"type": "array", "items": {"type": "string"}}
-                    }
-                },
-                "skills_match": {
-                    "type": "object",
-                    "properties": {
-                        "score": {"type": "number", "minimum": 1, "maximum": 10},
-                        "match_percentage": {"type": "number"},
-                        "matching_skills": {"type": "array", "items": {"type": "string"}},
-                        "missing_skills": {"type": "array", "items": {"type": "string"}}
-                    }
-                },
-                "experience_relevance": {
-                    "type": "object",
-                    "properties": {
-                        "score": {"type": "number", "minimum": 1, "maximum": 10},
-                        "justification": {"type": "string"},
-                        "gaps": {"type": "array", "items": {"type": "string"}}
-                    }
-                }
-            }
-        },
-        "priority_recommendations": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "priority": {"type": "string", "enum": ["High", "Medium", "Low"]},
-                    "title": {"type": "string"},
-                    "description": {"type": "string"},
-                    "specific_example": {"type": "string"}
-                }
-            },
-            "maxItems": 5
-        },
-                    "improved_resume": {
-                "type": "object",
-                "properties": {
-                    "contact_info": {"type": "string"},
-                    "work_experience": {"type": "array", "items": {"type": "string"}},
-                    "education": {"type": "string"},
-                    "skills": {"type": "array", "items": {"type": "string"}},
-                    "additional_sections": {"type": "array", "items": {"type": "string"}}
-                }
-            }
-    },
-    "required": ["detailed_ratings", "priority_recommendations", "improved_resume"]
-}
-
-# First agent: Resume Evaluation Agent
-evaluation_agent = LlmAgent(
-    name="resume_evaluation_agent",
-    model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
-    generate_content_config=types.GenerateContentConfig(
-        max_output_tokens=12000,  # Increased token limit for comprehensive analysis
-        temperature=0.0,         # Optional: control randomness
-    ),
-    output_schema=EvaluationResponse,  # LlmAgent requires Pydantic BaseModel
-    instruction=(
-        "You are an expert resume evaluation specialist.\n"
-        "You MUST respond with structured JSON data matching the exact schema. No markdown, no explanations — JSON only.\n\n"
-
-        "=== ANALYSIS REQUIREMENTS ===\n"
-        "1. EXECUTIVE SUMMARY — 2-3 sentences covering overall quality and job fit.\n"
-        "2. OVERALL SCORE — Rate 1-10 based on quality and job alignment.\n"
-        "3. JOB MATCH PERCENTAGE — Precise 0-100 match with job requirements. Use the provided match_percentage from skills analysis.\n"
-        "4. SECTION ANALYSIS — Score each section 1-10 with specific, actionable feedback:\n"
-        "   - contact_info: professional completeness and presentation\n"
-        "   - work_experience: depth, achievements, quantifiable results, STAR format usage\n"
-        "   - education: relevance, recency, completeness\n"
-        "   - skills: technical breadth and alignment with JD\n"
-        "5. STRENGTHS — 3-5 specific resume strengths as strings.\n"
-        "6. WEAKNESSES — 3-5 specific areas needing improvement as strings.\n"
-        "7. MISSING SKILLS — Be thorough and exhaustive. List every skill, tool, framework, or methodology\n"
-        "   that appears in the job description but is absent from the resume. This list is critical —\n"
-        "   it drives downstream bullet rewriting, so do not omit minor skills.\n"
-        "8. MATCHING SKILLS — Skills that align between resume and JD.\n"
-        "9. ATS COMPATIBILITY — Score 1-10 plus:\n"
-        "   - issues: specific problems (e.g. missing keywords, table usage, graphics, non-standard section headers,\n"
-        "     missing job title keywords, acronyms not spelled out)\n"
-        "   - recommendations: concrete fixes for each issue\n\n"
-
-        "=== SECTION CONTENT GUIDELINES ===\n"
-        "- EDUCATION: Include major(s), minor(s), clusters, study abroad. First/second year students may include high school.\n"
-        "- EXPERIENCE: Include internships, research, part-time, summer, and volunteer work.\n"
-        "  Write without 'I' or 'we'. Start with active past-tense verbs.\n"
-        "  Evaluate for STAR format (Situation-Task-Action-Result) with measurable outcomes.\n"
-        "- ACTIVITIES & LEADERSHIP: Student orgs, extracurricular leadership roles demonstrating career competencies.\n"
-        "- SKILLS: Technical, software, lab skills, languages. Keep assessment brief.\n"
-        "- PROFESSIONAL SUMMARY: Do NOT recommend adding one.\n\n"
-
-        "=== STAR FORMAT EVALUATION ===\n"
-        "For each experience bullet, assess:\n"
-        "- Situation: is context provided?\n"
-        "- Task: is the specific responsibility clear?\n"
-        "- Action: is there a strong active verb and technical detail?\n"
-        "- Result: is there a quantified, measurable outcome?\n"
-        "Flag bullets missing Result or Action elements as high-priority weaknesses.\n\n"
-
-        "=== SKILLS ANALYSIS INTEGRATION ===\n"
-        "When skills analysis data is provided in the prompt:\n"
-        "- Use the provided match_percentage for job_match_percentage\n"
-        "- Use the provided missing_skills list as a starting point, then expand it\n"
-        "- Use the provided matching_skills list\n"
-        "- Reference quantified insights in section feedback\n\n"
-
-        "OUTPUT FORMAT: Return ONLY valid JSON matching the schema. No markdown, no code blocks, no explanation."
-    ),
-    description="Specializes in comprehensive resume evaluation and job matching analysis.",
-    tools=[],  # Must be empty when using output_schema
-)
-
-# Experience comparison schema for smart replacement
 class ExperienceComparison(BaseModel):
     resume_experience_index: int = Field(..., description="Index of experience in original resume")
     resume_experience_title: str
@@ -283,119 +85,144 @@ class SmartExperienceOptimization(BaseModel):
     swaps_made: int
     optimization_summary: str
 
-# Third agent: Smart Experience Replacement Agent
-experience_optimizer_agent = LlmAgent(
-    name="experience_optimizer_agent",
-    model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
-    generate_content_config=types.GenerateContentConfig(
-        max_output_tokens=8000,
-        temperature=0.0,
-    ),
-    output_schema=SmartExperienceOptimization,
+# ── Agents ───────────────────────────────────────────────────────────────
+
+evaluation_agent = LlmAgent(
+    name="resume_evaluation_agent",
+    model=_model(),
+    output_schema=EvaluationResponse,
     instruction=(
-        "You are an expert at optimizing resumes by strategically replacing experiences to improve job alignment.\n\n"
+        "You are a resume evaluation specialist. Your output feeds directly into a rewriting agent,\n"
+        "so accuracy and completeness of missing_skills and weak_bullets are critical.\n"
+        "Respond with structured JSON matching the schema. No markdown, no explanations.\n\n"
 
-        "=== TASK ===\n"
-        "Compare ALL pool experiences against ALL resume experiences to find optimal 1-for-1 replacements.\n\n"
+        "=== FIELDS ===\n"
+        "1. executive_summary — 2-3 sentences on overall quality and job fit.\n"
+        "2. overall_score — 1-10 based on quality and job alignment.\n"
+        "3. job_match_percentage — 0-100 based on skill overlap.\n"
+        "4. strengths — 3-5 specific strengths.\n"
+        "5. weaknesses — 3-5 areas needing improvement.\n"
+        "6. missing_skills — EXHAUSTIVE list of every keyword, skill, tool, framework, and methodology\n"
+        "   mentioned in the JD but absent from the resume. Use the EXACT wording from the JD.\n"
+        "   This list drives ATS keyword insertion downstream — do NOT omit minor skills.\n"
+        "7. matching_skills — skills present in both resume and JD.\n"
+        "8. weak_bullets (5-10 items) — the weakest bullet points in the resume relative to the JD.\n"
+        "   For each: copy the EXACT text from the resume into `text`, and explain in `reason`\n"
+        "   why it is weak (missing STAR result, vague language, no JD keywords, etc.).\n"
+        "   Prioritize bullets that could be improved by adding missing skills.\n\n"
 
-        "=== SCORING CRITERIA (0-100 for each experience) ===\n"
-        "Score every resume experience AND every pool experience on:\n"
-        "- RELEVANCE TO JOB: how well it matches the job description requirements\n"
-        "- SKILL ALIGNMENT: how many required skills it demonstrates\n"
-        "- IMPACT: strength of achievements and measurable results\n"
-        "Combine these into a single relevance score per experience.\n\n"
+        "=== GUIDELINES ===\n"
+        "- Do NOT recommend adding a Professional Summary.\n"
+        "- Flag bullets missing STAR Action or Result as weak.\n"
+        "- For missing_skills, go beyond obvious ones — include specific tools, certifications,\n"
+        "  methodologies, and soft skills mentioned in the JD.\n\n"
 
-        "=== COMPARISON PROCESS ===\n"
-        "1. Score ALL resume experiences (0-100).\n"
-        "2. Score ALL pool experiences (0-100).\n"
-        "3. For each resume experience, find the highest-scoring pool experience that could replace it.\n"
-        "4. Recommend replacement ONLY if the pool score exceeds the resume score by 20+ points.\n"
-        "5. Each pool experience can replace at most ONE resume experience.\n"
-        "6. If two pool experiences are tied for replacing the same resume experience,\n"
-        "   choose the one with the larger score difference.\n"
-        "7. Never add or remove experiences — only swap 1-for-1.\n\n"
-
-        "=== OUTPUT FORMAT ===\n"
-        "For every resume experience provide:\n"
-        "- resume_experience_index: index in original resume (0-based)\n"
-        "- resume_experience_title: exact title from resume\n"
-        "- should_replace: true only if a pool experience scores 20+ points higher\n"
-        "- pool_experience_index: index of the replacing pool experience (null if should_replace is false)\n"
-        "- relevance_score_resume: score of the original resume experience\n"
-        "- relevance_score_pool: score of the best candidate pool experience (0 if none)\n"
-        "- replacement_reason: specific explanation of why this swap improves job alignment,\n"
-        "  referencing which JD requirements are better addressed\n\n"
-
-        "Be conservative. A swap should only happen when the improvement is clear and meaningful.\n\n"
-
-        "OUTPUT FORMAT: Return ONLY valid JSON matching the schema. No markdown, no explanations."
+        "OUTPUT FORMAT: Return ONLY valid JSON matching the schema."
     ),
-    description="Intelligently swaps resume experiences with pool experiences when beneficial for job alignment.",
+    description="Evaluates resumes and identifies weak bullets and missing skills for the rewriting agent.",
     tools=[],
 )
 
-# Second agent: Resume Rating and Generation Agent
+experience_optimizer_agent = LlmAgent(
+    name="experience_optimizer_agent",
+    model=_model(),
+    output_schema=SmartExperienceOptimization,
+    instruction=(
+        "You are an expert at optimizing resumes by replacing experiences to improve job alignment.\n\n"
+
+        "=== TASK ===\n"
+        "Find optimal 1-for-1 swaps between resume experiences and pool experiences.\n\n"
+
+        "=== TWO CRITERIA FOR A BETTER SWAP ===\n"
+        "1. JD fit and keywords — The pool experience should match the job more closely: more exact or\n"
+        "   paraphrased overlap with JD keywords (tools, domains, responsibilities), and clearer alignment\n"
+        "   with what the role actually requires (title, industry, scope).\n"
+        "2. Stronger descriptions — The pool experience's bullet text should better demonstrate the\n"
+        "   candidate's skills: clearer STAR structure, quantified results, concrete actions, and\n"
+        "   evidence of impact versus vague or generic wording on the resume.\n\n"
+        "When comparing resume vs pool for the same role, weight BOTH criteria. A swap is compelling only\n"
+        "when the pool entry wins meaningfully on JD alignment and/or demonstrably stronger bullets.\n\n"
+
+        "=== SCORING (0-100 per experience) ===\n"
+        "Combine into one score: (a) JD keyword overlap + role/domain fit, and (b) strength of written\n"
+        "descriptions for showcasing skills and impact. Do not reward keyword stuffing without substance.\n\n"
+
+        "=== PROCESS ===\n"
+        "1. Score ALL resume experiences using the two criteria above.\n"
+        "2. Score ALL pool experiences the same way.\n"
+        "3. For each resume experience, find the highest-scoring pool candidate.\n"
+        "4. Recommend replacement ONLY if pool score exceeds resume score by 20+ points.\n"
+        "5. Each pool experience replaces at most ONE resume experience.\n"
+        "6. Ties: choose the candidate with the larger score difference.\n"
+        "7. Never add or remove experiences — swap 1-for-1 only.\n\n"
+
+        "=== OUTPUT (per resume experience) ===\n"
+        "resume_experience_index (0-based) | resume_experience_title (exact) | should_replace\n"
+        "pool_experience_index (null if no swap) | relevance_score_resume | relevance_score_pool\n"
+        "replacement_reason — cite JD keywords/fit AND/OR how pool bullets better show skills vs resume.\n\n"
+
+        "Be conservative. Only swap when the improvement is clear and meaningful.\n\n"
+
+        "OUTPUT FORMAT: Return ONLY valid JSON matching the schema. No markdown, no explanations."
+    ),
+    description="Swaps experiences when pool entries better match the JD and show stronger skill evidence.",
+    tools=[],
+)
+
 rating_agent = LlmAgent(
     name="resume_rating_and_generation_agent",
-    model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
-    generate_content_config=types.GenerateContentConfig(
-        max_output_tokens=12000,  # Increased token limit for generating full resumes  
-        temperature=0.0,         # Optional: control randomness
-    ),
-    output_schema=RatingResponse,  # LlmAgent requires Pydantic BaseModel
+    model=_model(),
+    output_schema=RatingResponse,
     instruction=(
-        "You are an expert resume content specialist.\n"
-        "Your job is to rate resume quality and produce targeted bullet rewrites that improve job alignment.\n\n"
+        "You are an expert resume content specialist and ATS optimization strategist.\n"
+        "Your PRIMARY goal: rewrite the pre-identified WEAK BULLETS so they contain\n"
+        "EXACT keywords and phrases from the job description.\n"
+        "ATS systems do literal keyword matching — synonyms or paraphrases do NOT count.\n\n"
 
-        "=== CRITICAL: EXACT LINE EXTRACTION ===\n"
-        "For paraphrasing_suggestion.current_text, you MUST:\n"
-        "1. Find the bullet or sentence in the ORIGINAL RESUME TEXT section of the prompt.\n"
-        "2. Copy it CHARACTER-BY-CHARACTER — every space, hyphen, period, capitalization, even typos.\n"
-        "3. Do NOT paraphrase, improve, or fix it — copy the ACTUAL text.\n"
-        "4. Include only ONE complete bullet or sentence, not multiple lines.\n"
-        "5. This is used for find-and-replace in the frontend — one wrong character breaks it.\n\n"
+        + _BULLET_GUIDELINES +
 
-        "=== ANTI-HALLUCINATION RULES ===\n"
-        "These rules are absolute. Violating them makes the tool harmful:\n"
-        "- Do NOT invent metrics, percentages, or numbers the user never mentioned.\n"
-        "- Do NOT add technologies, tools, or frameworks the user has not demonstrated.\n"
-        "- Only integrate missing skills that PLAUSIBLY relate to what the user actually described.\n"
-        "- If a missing skill does not fit the experience, do not force it in.\n"
-        "- Rewrites must be grounded in the user's real experience — expanded and sharpened, not fabricated.\n\n"
+        "\n\n=== SECTION 1: DETAILED RATINGS (scores 1-10) ===\n"
+        "- content_quality: clarity, impact, professionalism\n"
+        "- skills_match: keyword overlap between resume and JD\n"
+        "- experience_relevance: alignment with JD requirements\n\n"
 
-        "=== SECTION 1: DETAILED RATINGS ===\n"
-        "Provide scores 1-10 with detailed justification for:\n"
-        "- content_quality: clarity, impact, professionalism of experience descriptions\n"
-        "- ats_compatibility: keyword presence, standard headers, no graphics/tables, acronyms spelled out\n"
-        "- skills_match: match percentage, list matching and missing skills explicitly\n"
-        "- experience_relevance: how well experiences align with JD requirements\n\n"
+        "=== SECTION 2: PRIORITY RECOMMENDATIONS (EXACTLY 5-8 items) ===\n"
+        "You will receive a list of WEAK BULLETS and MISSING SKILLS from the evaluation agent.\n"
+        "BEFORE writing any suggestion, work through this checklist:\n"
+        "  a) Read the WEAK BULLETS list — these are your primary rewrite targets.\n"
+        "  b) Read the MISSING SKILLS list — these are the exact JD keywords to insert.\n"
+        "  c) For each weak bullet, ask: which missing skill can honestly be woven in?\n"
+        "  d) If a skill fits: plan to rewrite that bullet with the EXACT JD keyword.\n"
+        "  e) If no skill fits: improve the bullet for STAR format and impact instead.\n\n"
 
-        "=== SECTION 2: PRIORITY RECOMMENDATIONS (up to 7) ===\n"
-        "The prompt provides PRE-SELECTED WEAK BULLETS with RAG templates — rewrite those.\n\n"
+        "ATS KEYWORD RULES (critical — model checks this logically before you output JSON):\n"
+        "- Pick keywords ONLY from the MISSING SKILLS list in the user message. Copy each chosen string\n"
+        "  CHARACTER-FOR-CHARACTER (same spelling, spacing, punctuation as listed).\n"
+        "- suggested_text MUST contain every string in keywords_added as a LITERAL SUBSTRING.\n"
+        "  Example: if keywords_added contains \"PyTorch\", suggested_text must include the exact token PyTorch.\n"
+        "- If alignment_reason says you incorporated a term, that EXACT term must appear in suggested_text.\n"
+        "  Do not describe a keyword in alignment_reason that is missing from suggested_text.\n"
+        "- Use the EXACT JD wording, not synonyms (ATS literal match).\n"
+        "  Bad: list \"Kubernetes\" in keywords_added but write \"container orchestration\" only.\n"
+        "  Good: write \"... deployed services on Kubernetes ...\" and list \"Kubernetes\".\n"
+        "- Before returning JSON, mentally verify: for each item K in keywords_added, suggested_text.includes(K).\n\n"
 
-        "For EACH recommendation provide:\n"
-        "- priority: High / Medium / Low\n"
-        "- title: EXACT job title or position name from the resume (helps user identify which experience)\n"
-        "- description: what to improve and which missing skills to integrate, and why it matters\n"
-        "- specific_example: one-sentence guidance on the improvement approach\n"
-        "- paraphrasing_suggestion (REQUIRED for all experience recommendations):\n"
-        "  * current_text: one complete line copied EXACTLY from the resume (character-by-character)\n"
-        "  * suggested_text: rewritten version that:\n"
-        "      - starts with a strong past-tense action verb (no pronouns, no full sentences)\n"
-        "      - follows STAR format: [action verb] + [technical approach] + [quantified result]\n"
-        "      - naturally integrates 1-2 missing skills that genuinely fit this experience\n"
-        "      - adds technical specificity using JD terminology\n"
-        "      - stays 20-35 words, uses fragments not sentences\n"
-        "      - DOES NOT invent metrics or tools the user has not mentioned\n"
-        "  * job_requirement_reference: specific JD requirement this addresses\n"
-        "  * alignment_reason: explain (1) which missing skills were added, (2) how STAR format was applied,\n"
-        "    (3) why this is grounded in the user's actual experience\n\n"
+        "OTHER RULES:\n"
+        "1. Every recommendation MUST include a paraphrasing_suggestion. Never omit it.\n"
+        "2. NEVER invent tools, projects, or responsibilities the candidate has not demonstrated.\n"
+        "3. For each: priority | title (exact job title from resume) | description | specific_example\n"
+        "4. paraphrasing_suggestion fields:\n"
+        "   current_text — copy the weak bullet character-for-character (include bullet symbol)\n"
+        "   suggested_text — STAR format; MUST embed the exact strings in keywords_added (see rules above)\n"
+        "   keywords_added — one or more strings (as many as honestly fit), each an exact copy from MISSING SKILLS,\n"
+        "     each a substring of suggested_text; include every JD term you embedded\n"
+        "   job_requirement_reference — quote the specific JD sentence this addresses\n"
+        "   alignment_reason — quote the exact added strings; they must match keywords_added and appear in suggested_text\n\n"
 
-        "Do NOT recommend adding a professional summary section.\n"
-        "Set improved_resume to null — the frontend applies recommendations to the original.\n\n"
+        "Do NOT recommend adding a professional summary.\n\n"
 
-        "OUTPUT FORMAT: Return ONLY valid JSON matching RatingResponse schema. No markdown, no code blocks."
+        "OUTPUT FORMAT: Return ONLY valid JSON matching RatingResponse schema."
     ),
-    description="Specializes in resume rating, recommendations, and generating improved versions.",
-    tools=[],  # Must be empty when using output_schema
+    description="Rewrites weak resume bullets with exact JD keywords for ATS optimization.",
+    tools=[],
 )

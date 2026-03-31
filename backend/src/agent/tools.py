@@ -7,14 +7,22 @@ import json
 import os
 import re
 from typing import Dict, Any, List
-from google.genai import types
-from google.genai.client import Client
+from openai import OpenAI
 import PyPDF2
 import io
 import docx
 
-# Initialize Gemini client
-client = Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _chat(prompt: str, max_tokens: int = 4000) -> str:
+    """Send a single-turn chat prompt and return the text response."""
+    response = client.chat.completions.create(
+        model=os.getenv("REASONING_MODEL", "gpt-4o-mini"),
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+    )
+    return response.choices[0].message.content or ""
 
 def extract_text_from_pdf(content: bytes) -> str:
     """Extract text from PDF content"""
@@ -89,14 +97,11 @@ def analyze_resume_file(content: bytes, file_extension: str) -> Dict[str, Any]:
         Be thorough and specific in your analysis.
         """
         
-        response = client.models.generate_content(
-            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])]
-        )
-        
+        analysis = _chat(prompt)
+
         return {
             "success": True,
-            "analysis": response.text,
+            "analysis": analysis,
             "extracted_text": text
         }
         
@@ -135,14 +140,11 @@ def analyze_job_description(job_description: str) -> Dict[str, Any]:
         Be specific about requirements vs preferences.
         """
         
-        response = client.models.generate_content(
-            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])]
-        )
-        
+        analysis = _chat(prompt)
+
         return {
             "success": True,
-            "analysis": response.text,
+            "analysis": analysis,
             "job_description": job_description
         }
         
@@ -185,14 +187,11 @@ def compare_resume_to_job(resume_analysis: Dict[str, Any], job_analysis: Dict[st
         Be specific about gaps and matches.
         """
         
-        response = client.models.generate_content(
-            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])]
-        )
-        
+        comparison = _chat(prompt)
+
         return {
             "success": True,
-            "comparison": response.text,
+            "comparison": comparison,
             "match_analysis": "Detailed comparison completed"
         }
         
@@ -223,14 +222,7 @@ def extract_skills_from_text(text: str, context: str) -> List[str]:
         Example: python, javascript, aws, docker, project management
         """
         
-        response = client.models.generate_content(
-            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(max_output_tokens=2000)
-        )
-        
-        # Parse comma-separated skills
-        skills_text = response.text.strip()
+        skills_text = _chat(prompt, max_tokens=2000).strip()
         skills = [skill.strip() for skill in skills_text.split(',') if skill.strip()]
         return skills
         
@@ -278,14 +270,8 @@ def analyze_skills_matching(resume_text: str, job_description: str) -> Dict[str,
         Extract technical skills, tools, frameworks, and relevant soft skills.
         """
         
-        response = client.models.generate_content(
-            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(max_output_tokens=4000)
-        )
-        
         # Try to parse JSON response
-        response_text = response.text.strip()
+        response_text = _chat(prompt, max_tokens=4000).strip()
         
         # Extract JSON from markdown code blocks
         if "```json" in response_text:
@@ -393,13 +379,7 @@ def analyze_experience_structure(resume_text: str) -> Dict[str, Any]:
         Evaluate: action verbs, quantifiable results, STAR format, consistency.
         """
         
-        response = client.models.generate_content(
-            model=os.getenv("REASONING_MODEL", "gemini-2.5-flash"),
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(max_output_tokens=2000)
-        )
-        
-        response_text = response.text.strip()
+        response_text = _chat(prompt, max_tokens=2000).strip()
         
         # Extract JSON from markdown code blocks
         if "```json" in response_text:

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from google.genai import types
+from google.genai import types   # ADK still needs genai types for Content/Part
 from typing import Dict, Any
 import uuid
 
@@ -32,6 +32,38 @@ optimizer_runner = Runner(agent=experience_optimizer_agent, app_name=APP_NAME, s
 
 # Store resume analysis results temporarily
 resume_analyses: Dict[str, Dict[str, Any]] = {}
+
+# Store uploaded files on disk so they survive hot-reloads and server restarts
+import tempfile, os as _os
+_STORE_DIR = pathlib.Path(tempfile.gettempdir()) / "resume_parser_files"
+_STORE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _pdf_path(file_id: str) -> pathlib.Path:
+    return _STORE_DIR / f"{file_id}.pdf"
+
+
+def _doc_path(file_id: str) -> pathlib.Path:
+    return _STORE_DIR / f"{file_id}.docx"
+
+
+def _store_pdf(file_id: str, data: bytes) -> None:
+    _pdf_path(file_id).write_bytes(data)
+
+
+def _store_doc(file_id: str, data: bytes) -> None:
+    _doc_path(file_id).write_bytes(data)
+
+
+def _load_pdf(file_id: str) -> bytes | None:
+    p = _pdf_path(file_id)
+    return p.read_bytes() if p.exists() else None
+
+
+def _load_doc(file_id: str) -> bytes | None:
+    p = _doc_path(file_id)
+    return p.read_bytes() if p.exists() else None
+
 # --- End ADK Setup ---
 
 # Pydantic models for request/response
@@ -121,14 +153,24 @@ async def upload_resume(file: UploadFile = File(...)):
             "file_size": len(content),
             "file_type": file.content_type
         }
-        
+
+        # Persist file to disk so it survives hot-reloads
+        is_pdf = file.content_type == "application/pdf"
+        is_docx = file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if is_pdf:
+            _store_pdf(analysis_id, content)
+        elif is_docx:
+            _store_doc(analysis_id, content)
+
         return {
             "success": True,
             "analysis_id": analysis_id,
+            "pdf_id": analysis_id if is_pdf else None,
+            "doc_id": analysis_id if is_docx else None,
             "filename": file.filename,
             "file_size": len(content),
             "analysis": analysis_result.get("analysis", ""),
-            "extracted_text": analysis_result.get("extracted_text", ""),  # The actual resume text
+            "extracted_text": analysis_result.get("extracted_text", ""),
             "message": "Resume uploaded and analyzed successfully"
         }
         
@@ -149,167 +191,113 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
     try:
         if not request.resume_text.strip():
             raise HTTPException(status_code=400, detail="Resume text cannot be empty")
-        
+
         if not request.job_description.strip():
             raise HTTPException(status_code=400, detail="Job description cannot be empty")
-        
-        # Get skills analysis first
-        from .tools import analyze_skills_matching
-        skills_analysis = analyze_skills_matching(request.resume_text, request.job_description)
-        
-        # Step 1: Evaluation Agent - Just provide the data
+
+        # ── Step 1: Evaluation Agent ─────────────────────────────────────
         evaluation_prompt = f"""
         RESUME:
         {request.resume_text}
 
         JOB DESCRIPTION:
         {request.job_description}
-
-        SKILLS ANALYSIS DATA:
-        {skills_analysis}
         """
-        
+
         evaluation_content = types.Content(
             role="user", parts=[types.Part(text=evaluation_prompt)]
         )
-        
+
         evaluation_report = ""
-        chunk_count = 0
         async for event in evaluation_runner.run_async(
             user_id=USER_ID, session_id=SESSION_ID, new_message=evaluation_content
         ):
             if event.content and event.content.parts:
-                chunk_count += 1
-                chunk_text = event.content.parts[0].text
-                evaluation_report += chunk_text
-                print(f"DEBUG: Evaluation chunk {chunk_count}: {len(chunk_text)} chars")
-        
-        print(f"DEBUG: Total evaluation report: {len(evaluation_report)} characters")
-        
-        # Parse JSON response from structured output
+                evaluation_report += event.content.parts[0].text
+
+        print(f"DEBUG: Evaluation report: {len(evaluation_report)} chars")
+
         try:
             evaluation_data = json.loads(evaluation_report)
-            print("DEBUG: Successfully parsed evaluation JSON")
+            print("DEBUG: Parsed evaluation JSON OK")
         except json.JSONDecodeError as e:
             print(f"DEBUG: Failed to parse evaluation JSON: {e}")
-            # Fallback to original text format
             evaluation_data = {"raw_text": evaluation_report}
-        
-        # RAG: agent selects top K weak bullets → retrieve templates → inject into prompt
-        from .rag import (
-            select_weak_bullets_with_agent,
-            retrieve_examples_for_weak_bullets,
-            format_rag_for_rating_prompt,
-        )
-        missing_skills_for_rag = (
-            evaluation_data.get("missing_skills", [])
-            if isinstance(evaluation_data, dict) else []
-        )
-        weak_bullets = select_weak_bullets_with_agent(
-            resume_text=request.resume_text,
-            job_description=request.job_description,
-            missing_skills=missing_skills_for_rag,
-            top_k=7,
-        )
-        bullet_examples = retrieve_examples_for_weak_bullets(
-            weak_bullets=weak_bullets,
-            missing_skills=missing_skills_for_rag,
-            job_description=request.job_description,
-            k=3,
-        )
-        rag_block = format_rag_for_rating_prompt(bullet_examples, missing_skills_for_rag)
 
-        # Step 2: Rating Agent - receives weak bullets + RAG templates in prompt
+        # ── Build structured context for rating agent ────────────────────
+        missing_skills: list = evaluation_data.get("missing_skills", [])
+        weak_bullets: list = evaluation_data.get("weak_bullets", [])
+
+        missing_block = "\n".join(
+            f"  {i+1}. {s}" for i, s in enumerate(missing_skills)
+        ) if missing_skills else "(none identified)"
+
+        weak_block = "\n".join(
+            f"  {i+1}. \"{b['text']}\"\n     Reason: {b['reason']}"
+            for i, b in enumerate(weak_bullets)
+            if isinstance(b, dict) and b.get("text")
+        ) if weak_bullets else "(none identified)"
+
+        # ── Step 2: Rating Agent ─────────────────────────────────────────
         rating_prompt = f"""
-        TASK: Base your ratings and improvements on the evaluation report from the first agent.
+TASK: Rewrite the weak bullets identified below. Use exact JD keywords.
 
-        EVALUATION REPORT FROM FIRST AGENT (PRIMARY SOURCE):
-        {evaluation_report}
+==================== JOB DESCRIPTION ====================
+{request.job_description}
 
-        SUPPORTING DATA:
-        SKILLS ANALYSIS: {skills_analysis}
-        JOB DESCRIPTION: {request.job_description}
+==================== ORIGINAL RESUME TEXT ====================
+Copy current_text from here EXACTLY — character-for-character.
 
-        ==================== ORIGINAL RESUME TEXT (FOR EXACT TEXT EXTRACTION) ====================
-        IMPORTANT: When creating paraphrasing suggestions, you MUST copy text from this resume EXACTLY.
-        Do NOT paraphrase, improve, or modify the current_text - copy it character-by-character.
+{request.resume_text}
 
-        {request.resume_text}
+==================== MISSING JD KEYWORDS ====================
+{missing_block}
 
-        ==================== END OF RESUME TEXT ====================
+==================== WEAK BULLETS TO REWRITE ====================
+{weak_block}
 
-        {rag_block}
+==================== EVALUATION CONTEXT ====================
+Strengths: {json.dumps(evaluation_data.get("strengths", []))}
+Weaknesses: {json.dumps(evaluation_data.get("weaknesses", []))}
 
-        INSTRUCTIONS:
-        - Use the evaluation report findings as your primary source for ratings
-        - Focus paraphrasing_suggestion on the PRE-SELECTED WEAK BULLETS listed above
-        - For each weak bullet, write suggested_text modeled on its strong templates
-        - For paraphrasing_suggestion.current_text: Copy text EXACTLY from the resume above
-        - Do NOT copy metrics or technologies from templates the user has not demonstrated
-        - Use skills analysis data for quantified insights (match_percentage, missing_skills)
-        """
-        
+INSTRUCTIONS:
+- Rewrite each weak bullet above using exact JD keywords from the missing list
+- current_text must be copied character-for-character from the resume
+- Only add a keyword when the candidate's work honestly supports it
+- If no keyword fits, improve the bullet for STAR impact instead
+"""
+
         rating_content = types.Content(
             role="user", parts=[types.Part(text=rating_prompt)]
         )
-        
+
         rating_results = ""
-        rating_chunk_count = 0
-        
         try:
             async for event in rating_runner.run_async(
                 user_id=USER_ID, session_id=SESSION_ID, new_message=rating_content
             ):
                 if event.content and event.content.parts:
-                    rating_chunk_count += 1
-                    chunk_text = event.content.parts[0].text
-                    rating_results += chunk_text
-                    print(f"DEBUG: Rating chunk {rating_chunk_count}: {len(chunk_text)} chars")
-                        
+                    rating_results += event.content.parts[0].text
         except Exception as e:
             print(f"DEBUG: Rating stream error: {e}")
-            
-        print(f"DEBUG: Total rating results: {len(rating_results)} characters")
-        
-        # Parse JSON response from structured output
+
+        print(f"DEBUG: Rating results: {len(rating_results)} chars")
+
         try:
             rating_data = json.loads(rating_results)
-            print("DEBUG: Successfully parsed rating JSON")
-            
-            # Validate paraphrasing suggestions
-            if "priority_recommendations" in rating_data:
-                validated_count = 0
-                for rec in rating_data["priority_recommendations"]:
-                    if "paraphrasing_suggestion" in rec and rec["paraphrasing_suggestion"]:
-                        current_text = rec["paraphrasing_suggestion"].get("current_text", "")
-                        if current_text and current_text in request.resume_text:
-                            validated_count += 1
-                        else:
-                            print(f"WARNING: Paraphrasing suggestion text not found in resume: {current_text[:100]}...")
-                print(f"DEBUG: Validated {validated_count}/{len(rating_data['priority_recommendations'])} paraphrasing suggestions")
-
-
+            print("DEBUG: Parsed rating JSON OK")
         except json.JSONDecodeError as e:
             print(f"DEBUG: Failed to parse rating JSON: {e}")
-            # Fallback to original text format
             rating_data = {"raw_text": rating_results}
-        
-        # Ensure skills analysis data is included in evaluation response
-        if "matching_skills" not in evaluation_data or not evaluation_data.get("matching_skills"):
-            evaluation_data["matching_skills"] = skills_analysis.get("matching_skills", [])
-        if "missing_skills" not in evaluation_data or not evaluation_data.get("missing_skills"):
-            evaluation_data["missing_skills"] = skills_analysis.get("missing_skills", [])
-        if "job_match_percentage" not in evaluation_data or not evaluation_data.get("job_match_percentage"):
-            evaluation_data["job_match_percentage"] = skills_analysis.get("match_percentage", 0)
-        
+
         return {
             "success": True,
             "structured_evaluation": evaluation_data,
             "structured_rating": rating_data,
             "workflow_type": "sequential_evaluation_and_rating",
-            "message": "Resume evaluation and rating completed using sequential agents"
+            "message": "Resume evaluation and rating completed"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -392,6 +380,406 @@ async def analyze_experience_swaps(request: SmartResumeRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Smart optimization failed: {str(e)}")
+
+# === EXPERIENCE SWAP ON DOCX ===
+
+class ExperienceSwap(BaseModel):
+    resume_experience_title: str
+    pool_title: str
+    pool_company: str = ""
+    pool_duration: str = ""
+    pool_description: str = ""
+
+class ApplySwapsRequest(BaseModel):
+    doc_id: str
+    swaps: list[ExperienceSwap]
+
+@app.post("/apply-swaps-docx")
+async def apply_swaps_docx(request: ApplySwapsRequest):
+    """Apply accepted experience swaps to the Word document.
+
+    For each swap, finds the section headed by the old experience title
+    and replaces it with the pool experience content.  Returns a new
+    doc_id pointing to the modified file so the frontend can preview it.
+    """
+    import re as _re
+    from docx import Document as DocxDocument
+    import io
+
+    data = _load_doc(request.doc_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+
+    def norm(t: str) -> str:
+        return _re.sub(r"\\s+", " ", t).strip()
+
+    def para_full_text(para) -> str:
+        return "".join(
+            t.text or "" for t in para._element.iter(f"{{{_W_NS}}}t")
+        )
+
+    def write_para(para, new_text: str) -> None:
+        all_t = list(para._element.iter(f"{{{_W_NS}}}t"))
+        if not all_t:
+            return
+        all_t[0].text = new_text
+        all_t[0].set(_XML_SPACE, "preserve")
+        for t in all_t[1:]:
+            t.text = ""
+
+    doc = DocxDocument(io.BytesIO(data))
+    paras = doc.paragraphs
+
+    for swap in request.swaps:
+        old_title_norm = norm(swap.resume_experience_title).lower()
+
+        # Find the paragraph that contains the old experience title
+        start_idx = None
+        for i, p in enumerate(paras):
+            if old_title_norm in norm(para_full_text(p)).lower():
+                start_idx = i
+                break
+
+        if start_idx is None:
+            continue
+
+        # Determine the extent of this experience block:
+        # from the title paragraph to the paragraph before the next
+        # section/experience heading (heuristic: next paragraph whose
+        # font is bold or whose style name contains "Heading", or
+        # a blank line followed by another bold/heading paragraph).
+        end_idx = start_idx + 1
+        for j in range(start_idx + 1, len(paras)):
+            text = para_full_text(paras[j]).strip()
+            if not text:
+                end_idx = j
+                continue
+            # Check if this paragraph looks like a new heading
+            is_bold = any(
+                r.bold for r in paras[j].runs if r.text.strip()
+            ) if paras[j].runs else False
+            style_name = (paras[j].style.name or "").lower()
+            is_heading = "heading" in style_name
+            if (is_bold or is_heading) and j > start_idx + 1:
+                break
+            end_idx = j + 1
+
+        # Build replacement lines
+        new_lines = [swap.pool_title]
+        meta_parts = [p for p in [swap.pool_company, swap.pool_duration] if p]
+        if meta_parts:
+            new_lines.append(" | ".join(meta_parts))
+        if swap.pool_description:
+            for bullet in swap.pool_description.split("\n"):
+                b = bullet.strip()
+                if b:
+                    new_lines.append(b)
+
+        # Write replacement: reuse existing paragraphs where possible,
+        # clear extras
+        for k in range(start_idx, end_idx):
+            line_idx = k - start_idx
+            if line_idx < len(new_lines):
+                write_para(paras[k], new_lines[line_idx])
+            else:
+                write_para(paras[k], "")
+
+    # Save to a NEW doc_id so the original is preserved
+    buf = io.BytesIO()
+    doc.save(buf)
+    new_bytes = buf.getvalue()
+
+    new_doc_id = f"swapped_{request.doc_id}"
+    _store_doc(new_doc_id, new_bytes)
+
+    # Also extract text from the modified doc for the evaluation step
+    from .tools import extract_text_from_docx
+    modified_text = extract_text_from_docx(new_bytes)
+
+    return {
+        "success": True,
+        "doc_id": new_doc_id,
+        "modified_resume_text": modified_text,
+    }
+
+
+# === FILE VIEWER / DOWNLOAD ENDPOINTS ===
+
+@app.get("/resume-pdf/{pdf_id}")
+async def serve_resume_pdf(pdf_id: str):
+    """Serve the original uploaded PDF so the frontend can display it."""
+    data = _load_pdf(pdf_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="PDF not found")
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/resume-doc/{doc_id}")
+async def serve_resume_doc(doc_id: str):
+    """Serve the original uploaded Word document so the frontend can render it."""
+    data = _load_doc(doc_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+class TextReplacement(BaseModel):
+    current_text: str
+    suggested_text: str
+
+
+class ModifyPDFRequest(BaseModel):
+    pdf_id: str
+    replacements: list[TextReplacement]
+
+
+def _apply_replacement(page, current_text: str, suggested_text: str) -> bool:
+    """
+    Find current_text on a PDF page and replace it with suggested_text, preserving
+    the original font size and color.
+
+    Strategy:
+    1. Use the first 40 chars of the (normalised) current_text as a short anchor for
+       page.search_for(), which is reliable for short strings even across ligatures.
+    2. Walk page.get_text("dict") spans to collect every span that belongs to the
+       full bullet (potentially spanning multiple lines).
+    3. Union all their bboxes into one combined rect.
+    4. Extract font size + colour from the first matching span.
+    5. Apply a single add_redact_annot on the combined rect so the whole multi-line
+       bullet is whited out and the new text is drawn in the same size/colour.
+    """
+    import fitz
+    import re
+
+    def norm(t: str) -> str:
+        return re.sub(r"\s+", " ", t).strip()
+
+    norm_current = norm(current_text)
+    # Strip leading bullet / dash symbols for the anchor search
+    anchor_clean = re.sub(r"^[•·\-\*\s]+", "", norm_current)
+    anchor = anchor_clean[:40].strip()
+    if not anchor:
+        return False
+
+    instances = page.search_for(anchor)
+    if not instances:
+        return False
+
+    anchor_rect = instances[0]
+
+    # Walk all spans to find those belonging to this bullet
+    text_dict = page.get_text("dict")
+    collected_spans = []
+    accumulated = ""
+    collecting = False
+    font_size = 10.0
+    font_color_raw = 0  # integer packed RGB
+
+    for block in text_dict.get("blocks", []):
+        if "lines" not in block:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                span_rect = fitz.Rect(span["bbox"])
+
+                # Start collecting once we hit the anchor span
+                if not collecting and span_rect.intersects(anchor_rect):
+                    collecting = True
+                    font_size = span["size"]
+                    font_color_raw = span["color"]
+
+                if collecting:
+                    collected_spans.append(span)
+                    accumulated += span["text"]
+
+                    # Stop once we have matched enough text
+                    if norm_current in norm(accumulated):
+                        break
+            if collected_spans and norm_current in norm(accumulated):
+                break
+        if collected_spans and norm_current in norm(accumulated):
+            break
+
+    if not collected_spans:
+        # Fallback: use just the anchor rect with default font properties
+        collected_spans = [{"bbox": anchor_rect, "size": font_size, "color": 0}]
+
+    # Build the union of all collected span bboxes
+    combined = fitz.Rect(collected_spans[0]["bbox"])
+    for span in collected_spans[1:]:
+        combined = combined | fitz.Rect(span["bbox"])
+
+    # Convert packed-int colour to (r, g, b) floats (PyMuPDF stores as 0xRRGGBB int)
+    c = font_color_raw
+    rgb = ((c >> 16) / 255.0, ((c >> 8) & 0xFF) / 255.0, (c & 0xFF) / 255.0)
+
+    page.add_redact_annot(
+        combined,
+        text=suggested_text,
+        fontsize=round(font_size, 1),
+        text_color=rgb,
+        align=0,  # left-align
+    )
+    return True
+
+
+@app.post("/download-modified-pdf")
+async def download_modified_pdf(request: ModifyPDFRequest):
+    """Apply approved text replacements to the original PDF and return the modified file."""
+    data = _load_pdf(request.pdf_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    import fitz  # pymupdf
+    doc = fitz.open(stream=data, filetype="pdf")
+
+    for page in doc:
+        changed = False
+        for rep in request.replacements:
+            if _apply_replacement(page, rep.current_text, rep.suggested_text):
+                changed = True
+        if changed:
+            page.apply_redactions()
+
+    return Response(
+        content=doc.tobytes(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=improved-resume.pdf"},
+    )
+
+
+class ModifyDocxRequest(BaseModel):
+    doc_id: str
+    replacements: list[TextReplacement]
+
+
+@app.post("/download-modified-docx")
+async def download_modified_docx(request: ModifyDocxRequest):
+    """Apply approved text replacements to the original Word document and return it."""
+    import re
+    from docx import Document as DocxDocument
+    import io
+
+    data = _load_doc(request.doc_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+
+    def norm(t: str) -> str:
+        return re.sub(r"\s+", " ", t).strip()
+
+    _BULLET_RE = re.compile(r"^[\s•·–—\u2013\u2014\u2022\u25aa\u25ba*○▪►◆▸\-]+")
+
+    def strip_bullet(t: str) -> str:
+        return _BULLET_RE.sub("", t).strip()
+
+    def para_full_text(para) -> str:
+        """Get ALL text in the paragraph, including text inside
+        hyperlinks, smart tags, and other nested elements that
+        para.runs / para.text might miss."""
+        p_elem = para._element
+        return "".join(
+            t.text or "" for t in p_elem.iter(f"{{{_W_NS}}}t")
+        )
+
+    def write_para(para, new_text: str) -> None:
+        """Replace ALL text in the paragraph with new_text.
+
+        Finds every <w:t> element (including those nested inside
+        <w:hyperlink>, <w:smartTag>, etc.), puts the full new text in
+        the first one, and blanks out the rest.  This guarantees no
+        leftover text from hidden nested elements.
+        """
+        p_elem = para._element
+        all_t = list(p_elem.iter(f"{{{_W_NS}}}t"))
+        if not all_t:
+            return
+        all_t[0].text = new_text
+        all_t[0].set(_XML_SPACE, "preserve")
+        for t in all_t[1:]:
+            t.text = ""
+
+    def is_match(body: str, current: str) -> bool:
+        """Check if a paragraph body matches current_text (exact or anchor)."""
+        if current in body:
+            return True
+        anchor = current[:40]
+        if len(anchor) >= 20 and anchor in body:
+            return True
+        return False
+
+    def apply_replacement(paras: list, current: str, suggested: str) -> bool:
+        """Find the paragraph(s) matching current_text, replace with
+        suggested_text, and clear any continuation paragraphs.
+
+        A single resume bullet can span multiple Word paragraphs
+        (Word wraps long text into continuation <w:p> elements).
+        After replacing the first matched paragraph, we scan forward
+        and clear subsequent paragraphs whose text appears inside the
+        original current_text — these are leftover continuations.
+        """
+        norm_current = strip_bullet(norm(current))
+        norm_suggested = strip_bullet(norm(suggested))
+
+        if not norm_current:
+            return False
+
+        for i, para in enumerate(paras):
+            body = strip_bullet(norm(para_full_text(para)))
+            if not body:
+                continue
+
+            if not is_match(body, norm_current):
+                continue
+
+            # Found the starting paragraph — replace it
+            write_para(para, norm_suggested)
+
+            # Clear the next paragraph if it's a leftover continuation
+            if i + 1 < len(paras):
+                cont = strip_bullet(norm(para_full_text(paras[i + 1])))
+                if len(cont) >= 8 and cont in norm_current:
+                    write_para(paras[i + 1], "")
+
+            return True
+
+        return False
+
+    doc = DocxDocument(io.BytesIO(data))
+
+    for rep in request.replacements:
+        if apply_replacement(list(doc.paragraphs), rep.current_text, rep.suggested_text):
+            continue
+        # Also search inside tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if apply_replacement(list(cell.paragraphs), rep.current_text, rep.suggested_text):
+                        break
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=improved-resume.docx"},
+    )
+
 
 # === FRONTEND STATIC FILES ===
 # Mount React frontend after all API routes (must be last)

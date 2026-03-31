@@ -13,6 +13,7 @@ export default function App() {
   const [experiences, setExperiences] = useState<Experience[]>([]);
   const [swapRecommendations, setSwapRecommendations] = useState<any>(null);
   const [resumeText, setResumeText] = useState<string>('');
+  const [docId, setDocId] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,16 +24,13 @@ export default function App() {
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      // Validate file type
+      // Validate file type — Word (.docx) only
       const allowedTypes = [
-        'application/pdf',
-        'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'text/plain'
       ];
-      
+
       if (!allowedTypes.includes(file.type)) {
-        setError('Please upload a PDF, DOC, DOCX, or TXT file');
+        setError('Please upload a Word document (.docx)');
         return;
       }
       
@@ -75,11 +73,8 @@ export default function App() {
     try {
       let resumeText = '';
       
-      // Extract resume text or upload file to backend
-      if (selectedFile.type === 'text/plain') {
-        resumeText = await extractResumeText(selectedFile);
-      } else {
-        // Upload PDF, DOC, DOCX files to backend for processing
+      // Upload .docx to backend for text extraction
+      {
         const formData = new FormData();
         formData.append('file', selectedFile);
         
@@ -114,6 +109,11 @@ export default function App() {
         
         resumeText = uploadResult.extracted_text || uploadResult.analysis || `Resume analysis for ${selectedFile.name}`;
         console.log('Resume text length:', resumeText.length, 'First 200 chars:', resumeText.substring(0, 200));
+
+        // Store doc_id for the viewer
+        if (uploadResult.doc_id) {
+          setDocId(uploadResult.doc_id);
+        }
       }
 
       // Store resume text for later use
@@ -212,81 +212,70 @@ export default function App() {
 
   // Handle accepting swaps
   const handleAcceptSwaps = async () => {
-    if (!swapRecommendations || !resumeText) return;
+    if (!swapRecommendations || !resumeText || !docId) return;
 
     setIsAnalyzing(true);
     setError(null);
 
     try {
-      // Apply swaps locally in the frontend
-      let modifiedResume = resumeText;
-      let swapsApplied = 0;
-
-      swapRecommendations.comparisons
+      // Build swap list from accepted comparisons
+      const swaps = swapRecommendations.comparisons
         .filter((c: any) => c.should_replace)
-        .forEach((comparison: any) => {
+        .map((comparison: any) => {
           const poolExp = experiences[comparison.pool_experience_index];
-          const oldTitle = comparison.resume_experience_title;
-          
-          // Try to find and replace the experience by title
-          if (modifiedResume.includes(oldTitle)) {
-            // Find the experience block (from title to next double newline or title)
-            const titleIndex = modifiedResume.indexOf(oldTitle);
-            const afterTitle = modifiedResume.substring(titleIndex);
-            const endMatch = afterTitle.match(/\n\n|\n[A-Z][A-Z\s]+\n/);
-            const endIndex = endMatch ? titleIndex + endMatch.index! : modifiedResume.length;
-            
-            const newBlock = `${poolExp.title}\n${poolExp.company}\n${poolExp.duration}\n${poolExp.description}`;
-            
-            modifiedResume = modifiedResume.substring(0, titleIndex) + newBlock + modifiedResume.substring(endIndex);
-            swapsApplied++;
-          }
+          return {
+            resume_experience_title: comparison.resume_experience_title,
+            pool_title: poolExp.title,
+            pool_company: poolExp.company || '',
+            pool_duration: poolExp.duration || '',
+            pool_description: poolExp.description || '',
+          };
         });
 
-      console.log(`Applied ${swapsApplied} swaps locally`);
-      console.log('Modified resume length:', modifiedResume.length);
-      console.log('Modified resume first 200 chars:', modifiedResume.substring(0, 200));
-      
-      // Update resume text state with the modified resume
+      // Apply swaps to the actual Word document on the backend
+      const swapRes = await fetch('/apply-swaps-docx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_id: docId, swaps }),
+      });
+
+      if (!swapRes.ok) {
+        const errData = await swapRes.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Failed to apply swaps to document');
+      }
+
+      const swapResult = await swapRes.json();
+      if (!swapResult.success) {
+        throw new Error('Failed to apply swaps to document');
+      }
+
+      // Update docId to the new modified document
+      setDocId(swapResult.doc_id);
+      const modifiedResume = swapResult.modified_resume_text || resumeText;
       setResumeText(modifiedResume);
-      console.log('Resume text state updated with modified resume');
-      
-      // Now call /evaluate-resume with modified resume
+
+      // Evaluate the modified resume
       const response = await fetch('/evaluate-resume', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           resume_text: modifiedResume,
-          job_description: jobDescription
-        })
+          job_description: jobDescription,
+        }),
       });
 
       if (!response.ok) {
-        let errorMessage = 'Analysis failed';
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.detail || errorMessage;
-        } catch (e) {
-          errorMessage = `Server error: ${response.status} ${response.statusText}`;
-        }
-        throw new Error(errorMessage);
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server error: ${response.status}`);
       }
 
-      let result;
-      try {
-        result = await response.json();
-      } catch (e) {
-        throw new Error('Invalid response from server. Please check if backend is running.');
-      }
-
+      const result = await response.json();
       if (!result.success) {
         throw new Error(result.message || 'Analysis failed');
       }
 
       setAnalysisResult(result);
-      setSwapRecommendations(null); // Clear recommendations
+      setSwapRecommendations(null);
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply swaps and analyze');
@@ -353,6 +342,7 @@ export default function App() {
     setExperiences([]);
     setSwapRecommendations(null);
     setResumeText('');
+    setDocId(null);
     setAnalysisResult(null);
     setIsAnalyzing(false);
     setError(null);
@@ -363,7 +353,7 @@ export default function App() {
 
   return (
     <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
-      <h1>AI Resume Optimizer</h1>
+      <h1>BetterCV</h1>
       <p>Upload your resume and job description to get AI-powered feedback</p>
 
       {/* Error Display */}
@@ -383,15 +373,32 @@ export default function App() {
       {/* File Upload */}
       <div style={{ marginBottom: '20px' }}>
         <h2>1. Upload Resume</h2>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".pdf,.doc,.docx,.txt"
-          onChange={handleFileSelect}
-          style={{ marginBottom: '10px' }}
-        />
+        <p style={{ color: '#d32f2f', fontSize: '13px', marginBottom: '8px' }}>
+          Only Word documents (.docx) are accepted.
+        </p>
+        <label
+          style={{
+            display: 'inline-block',
+            padding: '10px 24px',
+            backgroundColor: '#1976d2',
+            color: '#fff',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontWeight: 600,
+            fontSize: '14px',
+          }}
+        >
+          Choose .docx File
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".docx"
+            onChange={handleFileSelect}
+            style={{ display: 'none' }}
+          />
+        </label>
         {selectedFile && (
-          <div style={{ color: 'green' }}>
+          <div style={{ color: 'green', marginTop: '8px' }}>
             ✓ Selected: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
           </div>
         )}
@@ -497,6 +504,7 @@ export default function App() {
                 evaluation={analysisResult.structured_evaluation}
                 rating={analysisResult.structured_rating}
                 originalResumeText={resumeText}
+                docId={docId ?? undefined}
               />
             ) : (
               <div className="p-6 bg-yellow-50 border border-yellow-200 rounded-lg">

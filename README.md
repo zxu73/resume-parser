@@ -1,23 +1,21 @@
-# Resume Optimizer
+# BetterCV
 
-An AI-powered resume optimization platform that analyzes resumes against job descriptions, identifies gaps, and rewrites weak bullet points using a multi-agent pipeline and RAG.
+An AI-powered resume optimization app that compares your resume to a job description, finds gaps, and suggests bullet rewrites using a multi-agent pipeline (Google ADK + OpenAI via LiteLLM).
 
-Built with **Google ADK**, **Gemini**, **FastAPI**, **ChromaDB**, and **React**.
+Built with **FastAPI**, **React**, and **python-docx** for Word uploads and downloads.
 
 ---
 
 ## What it does
 
-1. **Upload** a resume (PDF, DOCX, or TXT)
+1. **Upload** a resume as a Word document (`.docx`)
 2. **Paste** a target job description
-3. The system runs a 3-stage AI pipeline:
-   - **Evaluation agent** — scores your resume, identifies missing skills, analyzes ATS compatibility
-   - **RAG selection** — identifies your weakest bullets relative to the JD and retrieves strong example rewrites from a curated knowledge base
-   - **Rating agent** — rewrites your weak bullets using the retrieved examples as style guides, following STAR format and integrating missing JD skills
-4. **Review** recommendations with before/after bullet comparisons
-5. **Apply** rewrites with one click, export to PDF
+3. The system runs a sequential AI pipeline:
+   - **Evaluation agent** — summarizes fit, scores the resume, lists missing/matching skills, and flags weak bullets for rewrite
+   - **Rating agent** — scores content/skills/relevance and produces 5–8 paraphrasing suggestions (exact `current_text` from your resume + suggested rewrites)
+4. **Review** suggestions in the dashboard and preview, approve changes, and **download** an updated `.docx`
 
-Optionally: provide a **pool of additional experiences** and the system recommends which to swap in for better JD alignment.
+**Optional:** add a **pool of additional experiences**; the **experience optimizer** agent may recommend swapping a resume role for a stronger pool entry; accepting applies the swap in the document before evaluation.
 
 ---
 
@@ -25,15 +23,20 @@ Optionally: provide a **pool of additional experiences** and the system recommen
 
 ```mermaid
 flowchart TD
-    UserInput["Resume + Job Description"] --> SkillsTool["analyze_skills_matching()<br/>Extract matching skills, missing skills, match percentage"]
-    SkillsTool --> EvalAgent["evaluation_agent<br/>Score resume, ATS quality, and job fit"]
-    EvalAgent --> WeakSelector["select_weak_bullets_with_agent()<br/>Gemini identifies top-K weakest bullets"]
-    WeakSelector --> Retriever["retrieve_examples_for_weak_bullets()<br/>Embed weak bullets and search ChromaDB"]
-    Retriever --> RatingAgent["rating_agent<br/>Rewrite weak bullets using RAG templates"]
-    RatingAgent --> Frontend["React Frontend<br/>Show before/after rewrites and export"]
+    UserInput["Resume text + JD"] --> EvalAgent["evaluation_agent"]
+    EvalAgent --> RatingAgent["rating_agent"]
+    RatingAgent --> Frontend["React UI + docx preview / download"]
+```
 
-    Corpus["strong_bullets.json<br/>Curated strong resume bullets"] --> Chroma["ChromaDB<br/>Local vector index"]
-    Chroma --> Retriever
+With experience pool:
+
+```mermaid
+flowchart TD
+    Pool["Pool experiences"] --> Opt["experience_optimizer_agent"]
+    Resume["Resume + JD"] --> Opt
+    Opt --> User["User accepts or rejects swaps"]
+    User --> Docx["apply-swaps-docx"]
+    Docx --> Eval["evaluate-resume pipeline"]
 ```
 
 ---
@@ -41,14 +44,12 @@ flowchart TD
 ## Tech stack
 
 | Layer | Technology |
-|---|---|
-| Frontend | React 19, TypeScript, Vite, Tailwind CSS, Radix UI |
+|-------|------------|
+| Frontend | React, TypeScript, Vite, Tailwind CSS |
 | Backend | Python, FastAPI, Uvicorn |
-| AI agents | Google ADK, Gemini (`gemini-2.0-flash`) |
-| RAG | ChromaDB (local vector DB), Google `text-embedding-004` |
-| Resume parsing | PyPDF2, python-docx |
+| AI | Google ADK agents, LiteLLM → OpenAI (`REASONING_MODEL`) |
+| Resume | PyPDF2, python-docx, PyMuPDF (legacy PDF paths if used) |
 | Package manager | uv (Python), npm (Node) |
-| Deployment | Render |
 
 ---
 
@@ -58,8 +59,8 @@ flowchart TD
 
 - Python 3.11+
 - Node.js 20+
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) — Python package manager
-- A [Gemini API key](https://aistudio.google.com/apikey)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- An **OpenAI API key** (or compatible endpoint configured for LiteLLM)
 
 ### 1. Clone the repo
 
@@ -68,7 +69,7 @@ git clone https://github.com/your-username/resume-parser.git
 cd resume-parser
 ```
 
-### 2. Set up the backend
+### 2. Backend
 
 ```bash
 cd backend
@@ -81,18 +82,18 @@ uv pip install -r pyproject.toml
 Create `backend/.env`:
 
 ```
-GEMINI_API_KEY="your-api-key-here"
-REASONING_MODEL=gemini-2.0-flash
+OPENAI_API_KEY=sk-...
+REASONING_MODEL=gpt-4o-mini
 ```
 
-Start the backend:
+Start the API:
 
 ```bash
 cd src
 uvicorn agent.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-### 3. Set up the frontend
+### 3. Frontend
 
 ```bash
 cd frontend
@@ -100,27 +101,20 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
-
-> The Vite dev server proxies `/upload-resume`, `/evaluate-resume`, and `/analyze-experience-swaps` to the backend at `127.0.0.1:8000` automatically.
+Open [http://localhost:5173](http://localhost:5173). Vite proxies API routes to `127.0.0.1:8000` (see `vite.config.ts`).
 
 ---
 
-## RAG knowledge base
-
-The system uses a curated set of **75 strong resume bullets** across 5 tech roles (Software Engineer, Data Scientist, ML Engineer, Product Manager, Data Engineer) stored in `backend/data/strong_bullets.json`.
-
-On first run, the bullets are embedded using `text-embedding-004` and indexed into a local ChromaDB collection at `backend/.chroma`. Subsequent runs load the index from disk — no re-embedding needed.
-
----
-
-## API endpoints
+## API endpoints (selected)
 
 | Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/upload-resume` | Upload and parse a resume file |
-| `POST` | `/evaluate-resume` | Run full evaluation + RAG rewrite pipeline |
-| `POST` | `/analyze-experience-swaps` | Recommend experience swaps from a pool |
+|--------|----------|-------------|
+| `POST` | `/upload-resume` | Upload `.docx`, returns extracted text and `doc_id` |
+| `POST` | `/evaluate-resume` | Evaluation + rating agents |
+| `POST` | `/analyze-experience-swaps` | Optimizer recommendations |
+| `POST` | `/apply-swaps-docx` | Apply accepted swaps to stored doc |
+| `GET` | `/resume-doc/{doc_id}` | Serve original or swapped doc for preview |
+| `POST` | `/download-modified-docx` | Apply approved rewrites, return `.docx` |
 
 ---
 
@@ -129,28 +123,21 @@ On first run, the bullets are embedded using `text-embedding-004` and indexed in
 ```
 resume-parser/
 ├── backend/
-│   ├── data/
-│   │   └── strong_bullets.json     # RAG knowledge base
 │   ├── src/agent/
-│   │   ├── app.py                  # FastAPI routes
-│   │   ├── agent.py                # ADK agent definitions
-│   │   ├── rag.py                  # RAG pipeline
-│   │   └── tools.py                # Skills analysis utilities
+│   │   ├── app.py           # FastAPI routes
+│   │   ├── agent.py         # ADK agent definitions
+│   │   ├── tools.py         # Resume/job helpers
+│   │   └── guidelines.md    # Bullet-writing hints for agents
 │   ├── pyproject.toml
-│   └── .env                        # your API key (not committed)
+│   └── .env
 └── frontend/
     ├── src/
-    │   ├── App.tsx
-    │   ├── components/
-    │   └── types/
-    ├── vite.config.ts
-    └── package.json
+    └── vite.config.ts
 ```
 
 ---
 
 ## Notes
 
-- The free tier of Gemini API supports ~1500 requests/day with `gemini-2.0-flash`
-- The RAG index (`backend/.chroma`) is gitignored and built locally on first run
-- Anti-hallucination rules are enforced in agent prompts — rewrites are grounded in the user's actual experience, not invented metrics
+- Agent prompts stress honest rewrites: do not invent experience or metrics.
+- The UI brand name in the app is **BetterCV**.
