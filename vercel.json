@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "buildCommand": "cd frontend && npm ci && npm run build",
+  "outputDirectory": "frontend/dist",
+  "functions": {
+    "api/index.py": {
+      "runtime": "@vercel/python@4.5.0",
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    { "source": "/upload-resume", "destination": "/api/index" },
+    { "source": "/evaluate-resume", "destination": "/api/index" },
+    { "source": "/analyze-experience-swaps", "destination": "/api/index" },
+    { "source": "/apply-swaps-docx", "destination": "/api/index" },
+    { "source": "/resume-pdf/:path*", "destination": "/api/index" },
+    { "source": "/resume-doc/:path*", "destination": "/api/index" },
+    { "source": "/download-modified-pdf", "destination": "/api/index" },
+    { "source": "/download-modified-docx", "destination": "/api/index" },
+    { "source": "/health", "destination": "/api/index" }
+  ]
+}
