@@ -815,6 +815,20 @@ from pathlib import Path
 frontend_dist_path = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
 
 if frontend_dist_path.exists() and (frontend_dist_path / "index.html").exists():
+    @app.middleware("http")
+    async def no_cache_index_html(request: Request, call_next):
+        response = await call_next(request)
+        # Prevent caching of index.html so deploys are picked up immediately.
+        # Hashed assets (js/css) are still cached normally by the browser.
+        if request.url.path == "/" or (
+            response.status_code == 200
+            and "text/html" in response.headers.get("content-type", "")
+        ):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     # Mount static files at root - this catches all non-API routes
     app.mount("/", StaticFiles(directory=frontend_dist_path, html=True), name="static")
     print(f"✅ Frontend mounted from: {frontend_dist_path}")
