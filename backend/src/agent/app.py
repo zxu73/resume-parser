@@ -815,22 +815,29 @@ from pathlib import Path
 frontend_dist_path = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
 
 if frontend_dist_path.exists() and (frontend_dist_path / "index.html").exists():
-    @app.middleware("http")
-    async def no_cache_index_html(request: Request, call_next):
-        response = await call_next(request)
-        # Prevent caching of index.html so deploys are picked up immediately.
-        # Hashed assets (js/css) are still cached normally by the browser.
-        if request.url.path == "/" or (
-            response.status_code == 200
-            and "text/html" in response.headers.get("content-type", "")
-        ):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
-        return response
+    from fastapi.responses import HTMLResponse
 
-    # Mount static files at root - this catches all non-API routes
-    app.mount("/", StaticFiles(directory=frontend_dist_path, html=True), name="static")
+    from fastapi.responses import FileResponse
+
+    # Serve hashed assets (js/css/images) — these are safe to cache
+    app.mount("/assets", StaticFiles(directory=frontend_dist_path / "assets"), name="assets")
+
+    # Serve other static files from dist root (e.g. vite.svg, favicon.ico)
+    @app.get("/{file_name:path}")
+    async def serve_spa(file_name: str):
+        # If the file exists in dist, serve it directly
+        file_path = frontend_dist_path / file_name
+        if file_name and file_path.is_file() and file_path.name != "index.html":
+            return FileResponse(file_path)
+        # Otherwise serve index.html with no-cache for SPA routing
+        return HTMLResponse(
+            content=(frontend_dist_path / "index.html").read_text(),
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
     print(f"✅ Frontend mounted from: {frontend_dist_path}")
 else:
     print(f"⚠️ Frontend build not found at: {frontend_dist_path}")
