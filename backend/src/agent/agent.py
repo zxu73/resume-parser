@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 import litellm
@@ -28,7 +28,7 @@ class EvaluationResponse(BaseModel):
     weaknesses: List[str]
     missing_skills: List[str]
     matching_skills: List[str]
-    weak_bullets: List[WeakBullet] = Field(..., min_length=5, max_length=10)
+    weak_bullets: List[WeakBullet] = Field(..., min_length=10, max_length=20)
 
 # ── Rating Agent schema ──────────────────────────────────────────────────
 
@@ -45,18 +45,39 @@ class ParaphrasingSuggestion(BaseModel):
     current_text: str = Field(..., description="Current text from the resume")
     suggested_text: str = Field(
         ...,
-        description="Improved bullet; must contain every string in keywords_added as a literal substring (exact spelling)",
+        description=(
+            "Improved bullet in STAR format. If keywords_added is non-empty, every entry must appear as a "
+            "literal substring (exact spelling). If keywords_added is empty, STAR/impact improvement only — no forced JD terms"
+        ),
     )
     keywords_added: List[str] = Field(
         ...,
-        min_length=1,
-        description="Each entry must be copied EXACTLY from the MISSING SKILLS list in the user prompt; each must appear verbatim inside suggested_text",
+        min_length=0,
+        description=(
+            "JD terms from MISSING SKILLS embedded in suggested_text (exact copy, each a literal substring). "
+            "Use [] when no missing skill fits — STAR-only rewrite"
+        ),
     )
     job_requirement_reference: str = Field(..., description="Specific job requirement this addresses")
     alignment_reason: str = Field(
         ...,
-        description="Must only claim keywords that literally appear in suggested_text; name the exact strings from keywords_added",
+        description=(
+            "Why this rewrite helps. If keywords_added is non-empty: any JD term you mention as incorporated "
+            "MUST appear word-for-word in suggested_text and match keywords_added (no synonyms). "
+            "If keywords_added is empty: explain STAR/impact improvements only — do not claim new JD keywords"
+        ),
     )
+
+    @model_validator(mode="after")
+    def keywords_must_appear_in_suggested_text(self) -> "ParaphrasingSuggestion":
+        missing = [kw for kw in self.keywords_added if kw not in self.suggested_text]
+        if missing:
+            raise ValueError(
+                f"keywords_added entries {missing} do not appear as literal substrings "
+                f"in suggested_text. Either embed each keyword word-for-word in "
+                f"suggested_text or remove it from keywords_added."
+            )
+        return self
 
 class PriorityRecommendation(BaseModel):
     priority: str = Field(..., pattern="^(High|Medium|Low)$")
@@ -67,7 +88,7 @@ class PriorityRecommendation(BaseModel):
 
 class RatingResponse(BaseModel):
     detailed_ratings: DetailedRatings
-    priority_recommendations: List[PriorityRecommendation] = Field(..., min_length=5, max_length=8)
+    priority_recommendations: List[PriorityRecommendation] = Field(..., min_length=10, max_length=15)
 
 # ── Experience Optimizer schema ──────────────────────────────────────────
 
@@ -106,7 +127,7 @@ evaluation_agent = LlmAgent(
         "   mentioned in the JD but absent from the resume. Use the EXACT wording from the JD.\n"
         "   This list drives ATS keyword insertion downstream — do NOT omit minor skills.\n"
         "7. matching_skills — skills present in both resume and JD.\n"
-        "8. weak_bullets (5-10 items) — the weakest bullet points in the resume relative to the JD.\n"
+        "8. weak_bullets (10-20 items) — the weakest bullet points in the resume relative to the JD.\n"
         "   For each: copy the EXACT text from the resume into `text`, and explain in `reason`\n"
         "   why it is weak (missing STAR result, vague language, no JD keywords, etc.).\n"
         "   Prioritize bullets that could be improved by adding missing skills.\n\n"
@@ -175,9 +196,14 @@ rating_agent = LlmAgent(
     output_schema=RatingResponse,
     instruction=(
         "You are an expert resume content specialist and ATS optimization strategist.\n"
-        "Your PRIMARY goal: rewrite the pre-identified WEAK BULLETS so they contain\n"
-        "EXACT keywords and phrases from the job description.\n"
-        "ATS systems do literal keyword matching — synonyms or paraphrases do NOT count.\n\n"
+        "CRITICAL: Make MINIMAL edits. Keep the original wording, structure, and tone intact.\n"
+        "Only change what is necessary to insert missing JD keywords or fix a clearly weak STAR element.\n"
+        "Do NOT rewrite bullets from scratch — surgically insert keywords into the existing sentence.\n\n"
+        "For each weak bullet, follow this order: (1) If one or more MISSING SKILLS can be honestly\n"
+        "woven into that bullet, incorporate them using EXACT JD wording (ATS literal match).\n"
+        "(2) If no missing skill fits the experience, do not force keywords — improve STAR structure,\n"
+        "clarity, and impact instead, and use keywords_added: [].\n"
+        "When you do add keywords, synonyms or paraphrases do NOT count for ATS.\n\n"
 
         + _BULLET_GUIDELINES +
 
@@ -186,22 +212,42 @@ rating_agent = LlmAgent(
         "- skills_match: keyword overlap between resume and JD\n"
         "- experience_relevance: alignment with JD requirements\n\n"
 
-        "=== SECTION 2: PRIORITY RECOMMENDATIONS (EXACTLY 5-8 items) ===\n"
-        "You will receive a list of WEAK BULLETS and MISSING SKILLS from the evaluation agent.\n"
-        "BEFORE writing any suggestion, work through this checklist:\n"
-        "  a) Read the WEAK BULLETS list — these are your primary rewrite targets.\n"
-        "  b) Read the MISSING SKILLS list — these are the exact JD keywords to insert.\n"
-        "  c) For each weak bullet, ask: which missing skill can honestly be woven in?\n"
-        "  d) If a skill fits: plan to rewrite that bullet with the EXACT JD keyword.\n"
-        "  e) If no skill fits: improve the bullet for STAR format and impact instead.\n\n"
+        "=== SECTION 2: PRIORITY RECOMMENDATIONS (EXACTLY 10-15 items) ===\n"
+        "You will receive a list of WEAK BULLETS and MISSING SKILLS from the evaluation agent.\n\n"
+        "NO DUPLICATES: Each recommendation MUST target a DIFFERENT bullet from current_text.\n"
+        "Never suggest changes to the same bullet twice. Cover as many distinct weak bullets as possible.\n\n"
+        "MAXIMIZE KEYWORD COVERAGE — MULTI-PASS APPROACH:\n"
+        "Your primary goal is to find a home for EVERY missing skill. Follow these passes:\n\n"
+        "  PASS 1: For each weak bullet, insert all missing skills that obviously fit.\n"
+        "  PASS 2: List which missing skills are STILL unplaced. For each unplaced skill,\n"
+        "          scan ALL weak bullets again — is there ANY bullet whose work context\n"
+        "          could plausibly involve this skill? If yes, add it to that bullet.\n"
+        "  PASS 3: If skills remain unplaced after Pass 2, look at bullets you haven't\n"
+        "          selected yet (beyond the initial weak bullets list) — any bullet in the\n"
+        "          entire resume is a valid target if it can carry the keyword.\n\n"
+        "The ideal output places every missing skill into at least one recommendation.\n"
+        "Each bullet can carry multiple keywords, but each individual missing skill should appear\n"
+        "in AT MOST 2 different recommendations — do not repeat the same keyword across many bullets.\n"
+        "keywords_added: [] should be rare (at most 1-2 out of 10-15 recommendations).\n\n"
+        "BEFORE writing each paraphrasing_suggestion:\n"
+        "  a) Read the WEAK BULLETS — primary rewrite targets.\n"
+        "  b) Read MISSING SKILLS — exact strings to insert when they fit.\n"
+        "  c) Be GENEROUS — if the bullet describes work that could plausibly involve\n"
+        "     a JD skill, insert it. The candidate likely used it but didn't name it.\n"
+        "     Embed them verbatim and list all in keywords_added.\n"
+        "  d) Only use keywords_added: [] as a LAST RESORT when there is truly no reasonable connection\n"
+        "     between the bullet and any remaining missing skill.\n\n"
 
-        "ATS KEYWORD RULES (critical — model checks this logically before you output JSON):\n"
-        "- Pick keywords ONLY from the MISSING SKILLS list in the user message. Copy each chosen string\n"
-        "  CHARACTER-FOR-CHARACTER (same spelling, spacing, punctuation as listed).\n"
-        "- suggested_text MUST contain every string in keywords_added as a LITERAL SUBSTRING.\n"
+        "ATS KEYWORD RULES (when keywords_added is non-empty — verify before you output JSON):\n"
+        "- Pick keywords ONLY from the MISSING SKILLS list. Copy each chosen string CHARACTER-FOR-CHARACTER.\n"
+        "- If keywords_added is empty, skip this block — no JD keyword claims in alignment_reason.\n"
+        "- If keywords_added has entries: suggested_text MUST contain every one as a LITERAL SUBSTRING.\n"
         "  Example: if keywords_added contains \"PyTorch\", suggested_text must include the exact token PyTorch.\n"
-        "- If alignment_reason says you incorporated a term, that EXACT term must appear in suggested_text.\n"
-        "  Do not describe a keyword in alignment_reason that is missing from suggested_text.\n"
+        "- alignment_reason and suggested_text must agree: every term you say you incorporated must appear\n"
+        "  in suggested_text as that EXACT substring (word-for-word), and must be one of keywords_added.\n"
+        "  Wrong: keywords_added has \"REST APIs\" but you write \"web APIs\" in suggested_text and claim REST in why.\n"
+        "  Right: suggested_text contains the literal substring \"REST APIs\" and alignment_reason quotes that same string.\n"
+        "- Do not describe a keyword in alignment_reason that is missing from suggested_text.\n"
         "- Use the EXACT JD wording, not synonyms (ATS literal match).\n"
         "  Bad: list \"Kubernetes\" in keywords_added but write \"container orchestration\" only.\n"
         "  Good: write \"... deployed services on Kubernetes ...\" and list \"Kubernetes\".\n"
@@ -209,15 +255,17 @@ rating_agent = LlmAgent(
 
         "OTHER RULES:\n"
         "1. Every recommendation MUST include a paraphrasing_suggestion. Never omit it.\n"
-        "2. NEVER invent tools, projects, or responsibilities the candidate has not demonstrated.\n"
+        "2. NEVER invent entire projects or job responsibilities. But DO name JD skills when the bullet's context plausibly involves them.\n"
         "3. For each: priority | title (exact job title from resume) | description | specific_example\n"
         "4. paraphrasing_suggestion fields:\n"
         "   current_text — copy the weak bullet character-for-character (include bullet symbol)\n"
-        "   suggested_text — STAR format; MUST embed the exact strings in keywords_added (see rules above)\n"
-        "   keywords_added — one or more strings (as many as honestly fit), each an exact copy from MISSING SKILLS,\n"
-        "     each a substring of suggested_text; include every JD term you embedded\n"
-        "   job_requirement_reference — quote the specific JD sentence this addresses\n"
-        "   alignment_reason — quote the exact added strings; they must match keywords_added and appear in suggested_text\n\n"
+        "   suggested_text — STAR format; if keywords_added non-empty, embed those exact strings; if [], STAR-only polish\n"
+        "   keywords_added — each an exact copy from MISSING SKILLS and a substring of suggested_text, or [] if none fit\n"
+        "   job_requirement_reference — quote the JD sentence this bullet better addresses (STAR or keyword path)\n"
+        "   alignment_reason — if keywords_added non-empty: explicitly name each keyword you incorporated,\n"
+        "     e.g. 'Incorporated missing JD skill \"REST APIs\" to highlight API development experience.'\n"
+        "     List every keyword from keywords_added by name so the user sees exactly which missing skills were added.\n"
+        "     If keywords_added is []: describe STAR/impact only, no claimed new JD keywords\n\n"
 
         "Do NOT recommend adding a professional summary.\n\n"
 

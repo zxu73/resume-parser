@@ -290,6 +290,31 @@ INSTRUCTIONS:
             print(f"DEBUG: Failed to parse rating JSON: {e}")
             rating_data = {"raw_text": rating_results}
 
+        # ── Post-processing: sanitize keyword claims ────────────────
+        for rec in rating_data.get("priority_recommendations", []):
+            sug = rec.get("paraphrasing_suggestion")
+            if not sug:
+                continue
+            suggested = sug.get("suggested_text", "")
+            # Remove keywords_added entries not literally in suggested_text
+            original_kw = sug.get("keywords_added", [])
+            valid_kw = [kw for kw in original_kw if kw in suggested]
+            removed_kw = [kw for kw in original_kw if kw not in suggested]
+            sug["keywords_added"] = valid_kw
+            # Strip false keyword claims from alignment_reason
+            reason = sug.get("alignment_reason", "")
+            for kw in removed_kw:
+                reason = reason.replace(f"'{kw}'", "").replace(f'"{kw}"', "").replace(kw, "")
+            # Clean up leftover artifacts (double spaces, empty conjunctions)
+            import re as _re
+            reason = _re.sub(r"\s*,\s*,", ",", reason)
+            reason = _re.sub(r"\s*and\s*and\s*", " and ", reason)
+            reason = _re.sub(r"\s{2,}", " ", reason).strip()
+            reason = _re.sub(r"^[,\s]+|[,\s]+$", "", reason)
+            sug["alignment_reason"] = reason
+            if removed_kw:
+                print(f"DEBUG: Stripped invalid keywords {removed_kw} from recommendation '{rec.get('title', '')}'")
+
         return {
             "success": True,
             "structured_evaluation": evaluation_data,
