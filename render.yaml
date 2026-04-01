@@ -9,5 +9,9 @@ services:
     envVars:
       - key: GOOGLE_API_KEY
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: REASONING_MODEL
+        value: gpt-4o-mini
       - key: PYTHONPATH
         value: /opt/render/project/repo/backend/src
