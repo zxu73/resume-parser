@@ -43,7 +43,8 @@ export interface StructuredRating {
     skills_match: DetailedRating;
     experience_relevance: DetailedRating;
   };
-  priority_recommendations: PriorityRecommendation[];
+  keyword_suggestions: PriorityRecommendation[];
+  star_suggestions: PriorityRecommendation[];
 }
 
 export interface AnalysisResult {

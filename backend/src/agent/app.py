@@ -773,11 +773,18 @@ async def download_modified_docx(request: ModifyDocxRequest):
             # Found the starting paragraph — replace it
             write_para(para, norm_suggested)
 
-            # Clear the next paragraph if it's a leftover continuation
-            if i + 1 < len(paras):
-                cont = strip_bullet(norm(para_full_text(paras[i + 1])))
+            # Remove continuation paragraphs that are leftover line-wrap fragments.
+            # Walk forward and delete (not blank) every paragraph whose text is
+            # a substring of the original bullet — leaving no empty <w:p> behind.
+            j = i + 1
+            while j < len(paras):
+                cont = strip_bullet(norm(para_full_text(paras[j])))
                 if len(cont) >= 8 and cont in norm_current:
-                    write_para(paras[i + 1], "")
+                    elem = paras[j]._element
+                    elem.getparent().remove(elem)
+                    j += 1
+                else:
+                    break
 
             return True
 

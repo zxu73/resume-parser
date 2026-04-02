@@ -88,7 +88,44 @@ class PriorityRecommendation(BaseModel):
 
 class RatingResponse(BaseModel):
     detailed_ratings: DetailedRatings
-    priority_recommendations: List[PriorityRecommendation] = Field(..., min_length=10, max_length=15)
+    keyword_suggestions: List[PriorityRecommendation] = Field(
+        ...,
+        min_length=10,
+        max_length=15,
+        description="Suggestions that insert missing JD skills. Each must have non-empty keywords_added.",
+    )
+    star_suggestions: List[PriorityRecommendation] = Field(
+        ...,
+        min_length=5,
+        max_length=10,
+        description="STAR-format improvements only. Each must have keywords_added: [].",
+    )
+
+    @model_validator(mode="after")
+    def validate_suggestion_types(self) -> "RatingResponse":
+        for i, rec in enumerate(self.keyword_suggestions):
+            if not rec.paraphrasing_suggestion.keywords_added:
+                raise ValueError(
+                    f"keyword_suggestions[{i}] must have non-empty keywords_added — "
+                    "this section is for missing-skill insertion only."
+                )
+        for i, rec in enumerate(self.star_suggestions):
+            if rec.paraphrasing_suggestion.keywords_added:
+                raise ValueError(
+                    f"star_suggestions[{i}] must have keywords_added: [] — "
+                    "this section is for STAR/clarity improvements only, no keyword insertion."
+                )
+        keyword_texts = {
+            rec.paraphrasing_suggestion.current_text.strip()
+            for rec in self.keyword_suggestions
+        }
+        for i, rec in enumerate(self.star_suggestions):
+            if rec.paraphrasing_suggestion.current_text.strip() in keyword_texts:
+                raise ValueError(
+                    f"star_suggestions[{i}] targets a bullet already covered by keyword_suggestions. "
+                    "Each bullet must appear in exactly one section."
+                )
+        return self
 
 # ── Experience Optimizer schema ──────────────────────────────────────────
 
@@ -196,14 +233,10 @@ rating_agent = LlmAgent(
     output_schema=RatingResponse,
     instruction=(
         "You are an expert resume content specialist and ATS optimization strategist.\n"
-        "CRITICAL: Make MINIMAL edits. Keep the original wording, structure, and tone intact.\n"
-        "Only change what is necessary to insert missing JD keywords or fix a clearly weak STAR element.\n"
-        "Do NOT rewrite bullets from scratch — surgically insert keywords into the existing sentence.\n\n"
-        "For each weak bullet, follow this order: (1) If one or more MISSING SKILLS can be honestly\n"
-        "woven into that bullet, incorporate them using EXACT JD wording (ATS literal match).\n"
-        "(2) If no missing skill fits the experience, do not force keywords — improve STAR structure,\n"
-        "clarity, and impact instead, and use keywords_added: [].\n"
-        "When you do add keywords, synonyms or paraphrases do NOT count for ATS.\n\n"
+        "For every bullet you rewrite, produce a full STAR-format sentence:\n"
+        "  [Strong past-tense verb] + [technical approach / context] + [result or impact]\n"
+        "Do NOT invent metrics, percentages, or project names the user never mentioned.\n"
+        "When you add keywords, use EXACT JD wording — synonyms do NOT count for ATS.\n\n"
 
         + _BULLET_GUIDELINES +
 
@@ -212,31 +245,27 @@ rating_agent = LlmAgent(
         "- skills_match: keyword overlap between resume and JD\n"
         "- experience_relevance: alignment with JD requirements\n\n"
 
-        "=== SECTION 2: PRIORITY RECOMMENDATIONS (EXACTLY 10-15 items) ===\n"
-        "You will receive a list of WEAK BULLETS and MISSING SKILLS from the evaluation agent.\n\n"
-        "NO DUPLICATES: Each recommendation MUST target a DIFFERENT bullet from current_text.\n"
-        "Never suggest changes to the same bullet twice. Cover as many distinct weak bullets as possible.\n\n"
-        "MAXIMIZE KEYWORD COVERAGE — MULTI-PASS APPROACH:\n"
-        "Your primary goal is to find a home for EVERY missing skill. Follow these passes:\n\n"
-        "  PASS 1: For each weak bullet, insert all missing skills that obviously fit.\n"
-        "  PASS 2: List which missing skills are STILL unplaced. For each unplaced skill,\n"
-        "          scan ALL weak bullets again — is there ANY bullet whose work context\n"
-        "          could plausibly involve this skill? If yes, add it to that bullet.\n"
-        "  PASS 3: If skills remain unplaced after Pass 2, look at bullets you haven't\n"
-        "          selected yet (beyond the initial weak bullets list) — any bullet in the\n"
-        "          entire resume is a valid target if it can carry the keyword.\n\n"
-        "The ideal output places every missing skill into at least one recommendation.\n"
-        "Each bullet can carry multiple keywords, but each individual missing skill should appear\n"
-        "in AT MOST 2 different recommendations — do not repeat the same keyword across many bullets.\n"
-        "keywords_added: [] should be rare (at most 1-2 out of 10-15 recommendations).\n\n"
-        "BEFORE writing each paraphrasing_suggestion:\n"
-        "  a) Read the WEAK BULLETS — primary rewrite targets.\n"
-        "  b) Read MISSING SKILLS — exact strings to insert when they fit.\n"
-        "  c) Be GENEROUS — if the bullet describes work that could plausibly involve\n"
-        "     a JD skill, insert it. The candidate likely used it but didn't name it.\n"
-        "     Embed them verbatim and list all in keywords_added.\n"
-        "  d) Only use keywords_added: [] as a LAST RESORT when there is truly no reasonable connection\n"
-        "     between the bullet and any remaining missing skill.\n\n"
+        "=== SECTION 2: PER-BULLET DECISION PASS ===\n"
+        "You will receive WEAK BULLETS and MISSING SKILLS from the evaluation agent.\n"
+        "Visit every bullet in the resume exactly once, in order. For each bullet apply\n"
+        "exactly ONE rule — never both, never the same bullet in both output lists.\n\n"
+        "RULE A → emit into keyword_suggestions (target 10-15 items total):\n"
+        "  Condition: at least one MISSING SKILL can be honestly woven into this bullet.\n"
+        "  'Honestly' means the bullet describes work that plausibly involved that skill\n"
+        "  even if the candidate didn't name it (e.g. 'built APIs' + JD 'REST APIs').\n"
+        "  Action: rewrite the bullet in full STAR format AND embed every fitting missing\n"
+        "  skill verbatim. List each in keywords_added (each must be a literal substring\n"
+        "  of suggested_text). keywords_added must be non-empty.\n\n"
+        "RULE B → emit into star_suggestions (target 5-10 items total):\n"
+        "  Condition: no missing skill fits this bullet AND it can be meaningfully improved\n"
+        "  (vague, weak verb, lacks a result, no STAR structure, buries impact).\n"
+        "  Action: rewrite in full STAR format only. keywords_added must be [].\n"
+        "  Do NOT apply if the bullet is already clear and well-structured.\n\n"
+        "SKIP: no missing skill fits AND the bullet is already strong → do not emit it.\n\n"
+        "KEYWORD COVERAGE: after the per-bullet pass, check which missing skills are still\n"
+        "unplaced. For each unplaced skill, find the best already-selected Rule-A bullet\n"
+        "that can carry it and add it there. Each missing skill should appear in AT MOST\n"
+        "2 keyword_suggestions entries.\n\n"
 
         "ATS KEYWORD RULES (when keywords_added is non-empty — verify before you output JSON):\n"
         "- Pick keywords ONLY from the MISSING SKILLS list. Copy each chosen string CHARACTER-FOR-CHARACTER.\n"
@@ -253,23 +282,24 @@ rating_agent = LlmAgent(
         "  Good: write \"... deployed services on Kubernetes ...\" and list \"Kubernetes\".\n"
         "- Before returning JSON, mentally verify: for each item K in keywords_added, suggested_text.includes(K).\n\n"
 
-        "OTHER RULES:\n"
-        "1. Every recommendation MUST include a paraphrasing_suggestion. Never omit it.\n"
+        "OTHER RULES (apply to both sections):\n"
+        "1. Every suggestion MUST include a paraphrasing_suggestion. Never omit it.\n"
         "2. NEVER invent entire projects or job responsibilities. But DO name JD skills when the bullet's context plausibly involves them.\n"
         "3. For each: priority | title (exact job title from resume) | description | specific_example\n"
         "4. paraphrasing_suggestion fields:\n"
         "   current_text — copy the weak bullet character-for-character (include bullet symbol)\n"
-        "   suggested_text — STAR format; if keywords_added non-empty, embed those exact strings; if [], STAR-only polish\n"
-        "   keywords_added — each an exact copy from MISSING SKILLS and a substring of suggested_text, or [] if none fit\n"
-        "   job_requirement_reference — quote the JD sentence this bullet better addresses (STAR or keyword path)\n"
-        "   alignment_reason — if keywords_added non-empty: explicitly name each keyword you incorporated,\n"
+        "   suggested_text — STAR format; keyword_suggestions: embed exact keyword strings; star_suggestions: STAR-only polish, no keywords\n"
+        "   keywords_added — keyword_suggestions: exact copy from MISSING SKILLS, each a substring of suggested_text; star_suggestions: always []\n"
+        "   job_requirement_reference — quote the JD sentence this bullet better addresses\n"
+        "   alignment_reason — keyword_suggestions: explicitly name each keyword incorporated,\n"
         "     e.g. 'Incorporated missing JD skill \"REST APIs\" to highlight API development experience.'\n"
         "     List every keyword from keywords_added by name so the user sees exactly which missing skills were added.\n"
-        "     If keywords_added is []: describe STAR/impact only, no claimed new JD keywords\n\n"
+        "     star_suggestions: describe only STAR/impact improvements, do not mention JD keywords\n\n"
 
         "Do NOT recommend adding a professional summary.\n\n"
 
-        "OUTPUT FORMAT: Return ONLY valid JSON matching RatingResponse schema."
+        "OUTPUT FORMAT: Return ONLY valid JSON matching RatingResponse schema.\n"
+        "The JSON must have keys: detailed_ratings, keyword_suggestions, star_suggestions."
     ),
     description="Rewrites weak resume bullets with exact JD keywords for ATS optimization.",
     tools=[],

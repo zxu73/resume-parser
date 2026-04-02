@@ -2,34 +2,15 @@
 
 ## Rewrite decision order
 
-For each weak bullet:
+Visit each bullet exactly once and apply the first rule that fits:
 
-1. **Missing skills first** — If any MISSING SKILL can be honestly woven into that experience, incorporate it. Use the **exact** JD string in `suggested_text` and list every one you add in `keywords_added` (each must appear verbatim in the bullet).
-2. **STAR if no fit** — If no missing skill fits without stretching the truth, do **not** force keywords. Set `keywords_added` to `[]` and improve the bullet with stronger STAR structure, clarity, and grounded impact.
+1. **RULE A (keyword_suggestions)** — If any MISSING SKILL can be honestly woven into this bullet's work context, rewrite the bullet in full STAR format AND embed every fitting skill verbatim. List each in `keywords_added`.
+2. **RULE B (star_suggestions)** — If no missing skill fits but the bullet can be meaningfully improved (weak verb, vague, no result), rewrite in full STAR format only. Set `keywords_added` to `[]`.
+3. **SKIP** — If no missing skill fits and the bullet is already strong and STAR-structured, skip it.
+
+A bullet must never appear in both output sections.
 
 ---
-
-## Minimal-Edit Principle (CRITICAL)
-
-`suggested_text` must be the original `current_text` with **small insertions or appended phrases** — NOT a rewrite.
-
-**Allowed changes:**
-- Insert a keyword phrase using "using [keyword]", "via [keyword]", "leveraging [keyword]", or "with [keyword]"
-- Append a short clause like ", improving [result]" or ", utilizing [keyword]"
-- Swap one or two words to fit a keyword naturally
-
-**NOT allowed:**
-- Rearranging the sentence order
-- Replacing the original action verb with a different one
-- Rewriting the bullet from scratch with different wording
-- Changing the subject, object, or structure of the sentence
-
-**Test:** At least 70% of the words in `current_text` should appear in `suggested_text` in the same order. If you find yourself writing a completely new sentence, stop — go back to the original and just insert the keywords.
-
-**Example:**
-- current_text: `Implemented upload, persistence, and retrieval workflows that turned complex healthcare claims into a searchable internal application.`
-- GOOD suggested_text: `Implemented upload, persistence, and retrieval workflows using REST APIs and cloud-native engineering that turned complex healthcare claims into a searchable internal application.`
-- BAD suggested_text: `Designed and implemented a searchable internal application for healthcare claims by developing upload, persistence, and retrieval workflows, enabling 200+ users to access claims data efficiently.`
 
 ## Bullet Format (STAR)
 

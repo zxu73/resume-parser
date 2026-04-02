@@ -11,28 +11,32 @@ interface ResumePreviewProps {
   rating: StructuredRating;
 }
 
+type SectionKey = 'keyword' | 'star';
+
 interface Change {
-  idx: number;
+  idx: number;          // global index used for approve/skip sets
   rec: PriorityRecommendation;
   currentText: string;
   suggestedText: string;
   reason: string;
+  section: SectionKey;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function buildChanges(rating: StructuredRating): Change[] {
   const changes: Change[] = [];
-  (rating.priority_recommendations ?? []).forEach((rec, idx) => {
+  let idx = 0;
+  (rating.keyword_suggestions ?? []).forEach((rec) => {
     const s = rec.paraphrasing_suggestion;
     if (s?.current_text && s?.suggested_text) {
-      changes.push({
-        idx,
-        rec,
-        currentText: s.current_text,
-        suggestedText: s.suggested_text,
-        reason: s.alignment_reason,
-      });
+      changes.push({ idx: idx++, rec, currentText: s.current_text, suggestedText: s.suggested_text, reason: s.alignment_reason, section: 'keyword' });
+    }
+  });
+  (rating.star_suggestions ?? []).forEach((rec) => {
+    const s = rec.paraphrasing_suggestion;
+    if (s?.current_text && s?.suggested_text) {
+      changes.push({ idx: idx++, rec, currentText: s.current_text, suggestedText: s.suggested_text, reason: s.alignment_reason, section: 'star' });
     }
   });
   return changes;
@@ -56,6 +60,11 @@ const HIGHLIGHT_STYLE = `
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
+const SECTION_LABELS: Record<SectionKey, string> = {
+  keyword: 'Missing Skills',
+  star: 'STAR Improvements',
+};
+
 const ChangeCard: React.FC<{
   change: Change;
   total: number;
@@ -78,7 +87,7 @@ const ChangeCard: React.FC<{
       {/* Header */}
       <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-200">
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Change {activeIdx + 1} of {total}
+          {SECTION_LABELS[change.section]} · {activeIdx + 1} of {total}
         </span>
         <span className="text-xs text-gray-400">
           {approvedCount} approved · {skipped.size} skipped
@@ -214,13 +223,22 @@ const TextFallback: React.FC<{ resumeText: string; changes: Change[]; approved: 
 
 export const ResumePreview: React.FC<ResumePreviewProps> = ({ docId, resumeText, rating }) => {
   const changes = buildChanges(rating);
-  const [activeIdx, setActiveIdx] = useState(0);
+  const keywordChanges = changes.filter((c) => c.section === 'keyword');
+  const starChanges = changes.filter((c) => c.section === 'star');
+
+  const [activeSection, setActiveSection] = useState<SectionKey>('keyword');
+  const [keywordIdx, setKeywordIdx] = useState(0);
+  const [starIdx, setStarIdx] = useState(0);
   const [approved, setApproved] = useState<Set<number>>(new Set());
   const [skipped, setSkipped] = useState<Set<number>>(new Set());
   const [isDownloading, setIsDownloading] = useState(false);
   const [docHtml, setDocHtml] = useState<string>('');
   const [docLoading, setDocLoading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const sectionChanges = activeSection === 'keyword' ? keywordChanges : starChanges;
+  const sectionIdx = activeSection === 'keyword' ? keywordIdx : starIdx;
+  const setSectionIdx = activeSection === 'keyword' ? setKeywordIdx : setStarIdx;
 
   // Load Word document via mammoth when docId is provided
   useEffect(() => {
@@ -234,21 +252,23 @@ export const ResumePreview: React.FC<ResumePreviewProps> = ({ docId, resumeText,
       .finally(() => setDocLoading(false));
   }, [docId]);
 
-  const activeChange = changes[activeIdx];
+  const activeChange = sectionChanges[sectionIdx];
 
   const handleApprove = useCallback(() => {
+    if (!activeChange) return;
     setApproved((prev) => new Set([...prev, activeChange.idx]));
-    if (activeIdx < changes.length - 1) setActiveIdx((i) => i + 1);
-  }, [activeChange, activeIdx, changes.length]);
+    if (sectionIdx < sectionChanges.length - 1) setSectionIdx((i) => i + 1);
+  }, [activeChange, sectionIdx, sectionChanges.length, setSectionIdx]);
 
   const handleSkip = useCallback(() => {
+    if (!activeChange) return;
     setSkipped((prev) => new Set([...prev, activeChange.idx]));
-    if (activeIdx < changes.length - 1) setActiveIdx((i) => i + 1);
-  }, [activeChange, activeIdx, changes.length]);
+    if (sectionIdx < sectionChanges.length - 1) setSectionIdx((i) => i + 1);
+  }, [activeChange, sectionIdx, sectionChanges.length, setSectionIdx]);
 
   const handleNav = useCallback((dir: -1 | 1) => {
-    setActiveIdx((i) => Math.max(0, Math.min(changes.length - 1, i + dir)));
-  }, [changes.length]);
+    setSectionIdx((i) => Math.max(0, Math.min(sectionChanges.length - 1, i + dir)));
+  }, [sectionChanges.length, setSectionIdx]);
 
 
   const handleDownload = useCallback(async () => {
@@ -328,7 +348,7 @@ export const ResumePreview: React.FC<ResumePreviewProps> = ({ docId, resumeText,
       activeEl.classList.add('pdf-highlight-active');
       activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-  }, [activeIdx, activeText, approvedTexts, docHtml]);
+  }, [activeSection, sectionIdx, activeText, approvedTexts, docHtml]);
 
   if (changes.length === 0) {
     return (
@@ -372,28 +392,56 @@ export const ResumePreview: React.FC<ResumePreviewProps> = ({ docId, resumeText,
           ) : null}
         </div>
 
-        {/* ── Right: change card ────────────────────────── */}
+        {/* ── Right: tab bar + change card ─────────────── */}
         <div
-          className="w-[400px] shrink-0 bg-white border border-gray-200 rounded-lg p-5"
+          className="w-[400px] shrink-0 bg-white border border-gray-200 rounded-lg"
           style={{ minHeight: '500px', maxHeight: '88vh', overflowY: 'auto' }}
         >
-          {activeChange ? (
-            <ChangeCard
-              change={activeChange}
-              total={changes.length}
-              activeIdx={activeIdx}
-              approved={approved}
-              skipped={skipped}
-              onApprove={handleApprove}
-              onSkip={handleSkip}
-              onNav={handleNav}
-              onDownload={handleDownload}
-              isDownloading={isDownloading}
-              downloadLabel={`Download ${docId ? '.docx' : 'PDF'} (${approved.size} change${approved.size !== 1 ? 's' : ''} applied)`}
-            />
-          ) : (
-            <p className="text-gray-400 text-sm text-center mt-10">No changes available.</p>
-          )}
+          {/* Tab bar */}
+          <div className="flex border-b border-gray-200">
+            {(['keyword', 'star'] as SectionKey[]).map((key) => {
+              const count = key === 'keyword' ? keywordChanges.length : starChanges.length;
+              const label = SECTION_LABELS[key];
+              const isActive = activeSection === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setActiveSection(key)}
+                  className={`flex-1 py-3 text-xs font-semibold tracking-wide transition-colors ${
+                    isActive
+                      ? 'border-b-2 border-blue-600 text-blue-700 bg-blue-50'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                  }`}
+                >
+                  {label}
+                  <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${isActive ? 'bg-blue-200 text-blue-800' : 'bg-gray-200 text-gray-600'}`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Active change card */}
+          <div className="p-5">
+            {activeChange ? (
+              <ChangeCard
+                change={activeChange}
+                total={sectionChanges.length}
+                activeIdx={sectionIdx}
+                approved={approved}
+                skipped={skipped}
+                onApprove={handleApprove}
+                onSkip={handleSkip}
+                onNav={handleNav}
+                onDownload={handleDownload}
+                isDownloading={isDownloading}
+                downloadLabel={`Download ${docId ? '.docx' : 'PDF'} (${approved.size} change${approved.size !== 1 ? 's' : ''} applied)`}
+              />
+            ) : (
+              <p className="text-gray-400 text-sm text-center mt-10">No changes in this section.</p>
+            )}
+          </div>
         </div>
       </div>
     </>
