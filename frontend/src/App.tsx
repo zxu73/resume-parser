@@ -44,22 +44,6 @@ export default function App() {
     }
   };
 
-  // Extract text from resume file
-  const extractResumeText = async (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (file.type === 'text/plain') {
-          resolve(event.target?.result as string);
-        } else {
-          resolve('FILE_UPLOAD_REQUIRED');
-        }
-      };
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsText(file);
-    });
-  };
-
   // Start analysis
   const startAnalysis = async () => {
     if (!selectedFile || !jobDescription.trim()) {
@@ -94,21 +78,7 @@ export default function App() {
           throw new Error(uploadResult.error || 'Resume analysis failed');
         }
         
-        // Use extracted_text (the actual resume content), not analysis (the report)
-        // Debug: Log what we're getting
-        console.log('Upload result:', {
-          has_extracted_text: !!uploadResult.extracted_text,
-          extracted_text_length: uploadResult.extracted_text?.length || 0,
-          has_analysis: !!uploadResult.analysis,
-          analysis_length: uploadResult.analysis?.length || 0
-        });
-        
-        if (!uploadResult.extracted_text || uploadResult.extracted_text.trim().length === 0) {
-          console.warn('WARNING: extracted_text is empty! Using analysis as fallback.');
-        }
-        
         resumeText = uploadResult.extracted_text || uploadResult.analysis || `Resume analysis for ${selectedFile.name}`;
-        console.log('Resume text length:', resumeText.length, 'First 200 chars:', resumeText.substring(0, 200));
 
         // Store doc_id for the viewer
         if (uploadResult.doc_id) {
@@ -448,7 +418,7 @@ export default function App() {
           {isAnalyzing ? 'Analyzing...' : 'Start Analysis'}
         </Button>
         
-        {(selectedFile || jobDescription || analysisResult) && (
+        {(selectedFile || jobDescription || analysisResult || experiences.length > 0) && (
           <Button onClick={resetForm} variant="outline">
             Reset
           </Button>
@@ -466,12 +436,12 @@ export default function App() {
           <h3>Analysis in Progress...</h3>
           {experiences.length > 0 ? (
             <div>
-              <p><strong>🧠 Smart Optimization Mode Active</strong></p>
+              <p><strong>Smart Optimization Mode Active</strong></p>
               <p>AI is comparing your {experiences.length} pool experience(s) with resume experiences...</p>
               <p style={{ fontSize: '14px', marginTop: '10px' }}>
-                ✓ Step 1: Analyzing relevance scores...<br/>
-                ✓ Step 2: Deciding optimal swaps...<br/>
-                ✓ Step 3: Rephrasing for job alignment...
+                Step 1: Analyzing relevance scores…<br/>
+                Step 2: Deciding optimal swaps…<br/>
+                Step 3: Rephrasing for job alignment…
               </p>
             </div>
           ) : (

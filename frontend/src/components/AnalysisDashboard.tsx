@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { Card } from './ui/card';
 import { Badge } from './ui/badge';
 import { ResumePreview } from './ResumePreview';
@@ -35,12 +35,18 @@ const ScoreBar: React.FC<{ score: number; maxScore: number; label: string }> = (
   );
 };
 
-export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation, rating, originalResumeText, docId }) => {
-  useEffect(() => {
-    console.log('AnalysisDashboard - originalResumeText prop updated');
-    console.log('  Length:', originalResumeText?.length || 0);
-  }, [originalResumeText]);
+function computeBetterCVScore(evaluation: StructuredEvaluation, rating: StructuredRating): number {
+  // Weighted composite (0–100):
+  //   40% job keyword match (deterministic, from matching/missing skill counts)
+  //   35% overall quality (LLM evaluation)
+  //   25% experience relevance (LLM rating)
+  const jobMatch = evaluation.job_match_percentage * 0.40;
+  const quality  = (evaluation.overall_score / 10) * 100 * 0.35;
+  const relevance = (rating.detailed_ratings.experience_relevance.score / 10) * 100 * 0.25;
+  return Math.round(jobMatch + quality + relevance);
+}
 
+export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation, rating, originalResumeText, docId }) => {
   if (!evaluation || !rating) {
     return (
       <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
@@ -51,11 +57,20 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation
     );
   }
 
+  const betterCVScore = computeBetterCVScore(evaluation, rating);
+  const scoreColor = betterCVScore >= 80 ? 'text-green-600' : betterCVScore >= 60 ? 'text-yellow-600' : 'text-red-600';
+
   return (
     <div className="space-y-6">
       {/* Executive Summary & Overall Scores */}
       <Card className="p-6">
-        <h2 className="text-2xl font-bold mb-4">Executive Summary</h2>
+        <div className="flex items-start justify-between mb-4">
+          <h2 className="text-2xl font-bold">Executive Summary</h2>
+          <div className="text-right">
+            <div className={`text-5xl font-bold ${scoreColor}`}>{betterCVScore}</div>
+            <div className="text-xs text-gray-500 mt-1">BetterCV Score / 100</div>
+          </div>
+        </div>
         <p className="text-gray-700 mb-4">{evaluation.executive_summary}</p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
@@ -64,7 +79,7 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation
             <ScoreBar score={evaluation.overall_score} maxScore={10} label="Overall Quality" />
             <div className="mb-3">
               <div className="flex justify-between text-sm mb-1">
-                <span>Job Match</span>
+                <span>Keyword Match</span>
                 <span className="font-semibold">{evaluation.job_match_percentage}%</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
@@ -80,7 +95,6 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation
           <div>
             <h3 className="font-semibold mb-3">Detailed Ratings</h3>
             <ScoreBar score={rating.detailed_ratings.content_quality.score} maxScore={10} label="Content Quality" />
-            <ScoreBar score={rating.detailed_ratings.skills_match.score} maxScore={10} label="Skills Match" />
             <ScoreBar score={rating.detailed_ratings.experience_relevance.score} maxScore={10} label="Experience Relevance" />
           </div>
         </div>

@@ -1,10 +1,5 @@
 // TypeScript interfaces matching the backend schema
 
-export interface WeakBullet {
-  text: string;
-  reason: string;
-}
-
 export interface StructuredEvaluation {
   executive_summary: string;
   overall_score: number;
@@ -13,7 +8,6 @@ export interface StructuredEvaluation {
   weaknesses: string[];
   missing_skills: string[];
   matching_skills: string[];
-  weak_bullets?: WeakBullet[];
 }
 
 export interface DetailedRating {

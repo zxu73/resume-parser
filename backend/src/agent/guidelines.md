@@ -4,7 +4,7 @@
 
 Visit each bullet exactly once and apply the first rule that fits:
 
-1. **RULE A (keyword_suggestions)** — If any MISSING SKILL can be honestly woven into this bullet's work context, rewrite the bullet in full STAR format AND embed every fitting skill verbatim. List each in `keywords_added`.
+1. **RULE A (keyword_suggestions)** — If any MISSING SKILL can be honestly woven into this bullet's work context, rewrite the bullet in full STAR format AND embed every fitting skill verbatim. List each in `keywords_added`. Be generous — if the work could plausibly involve the skill, add it.
 2. **RULE B (star_suggestions)** — If no missing skill fits but the bullet can be meaningfully improved (weak verb, vague, no result), rewrite in full STAR format only. Set `keywords_added` to `[]`.
 3. **SKIP** — If no missing skill fits and the bullet is already strong and STAR-structured, skip it.
 
@@ -25,7 +25,6 @@ Every `suggested_text` must follow this structure:
 - Quantify the result only when the user has mentioned a number
 - When missing skills fit: incorporate **as many** as **plausibly fit** the same bullet; list every one in `keywords_added`, each verbatim in `suggested_text`. When none fit, use `keywords_added: []` and focus on STAR only
 - Do NOT invent metrics (numbers, percentages) the user has not mentioned
-- Prefer inserting keywords into the existing sentence over rewriting the sentence around the keywords
 
 **Good example:**
 `Reduced API latency 40% by migrating synchronous handlers to async Kafka consumers, improving throughput to 10k req/s`
@@ -49,6 +48,7 @@ Every `suggested_text` must follow this structure:
 - If a bullet mentions a general category (e.g., "cloud infrastructure"), and the JD names a specific tool in that category (e.g., "AWS", "Kubernetes"), insert the specific term — the experience context supports it.
 - Pack **as many relevant missing skills** as naturally fit into each bullet. Don't stop at one keyword per bullet.
 - Only skip a keyword when there is **no reasonable connection** between the bullet's context and the skill (e.g., a marketing bullet and "Kubernetes").
+- When no keyword fits at all, the bullet goes to Rule B (STAR improvement) or is skipped — do not force keywords.
 
 ---
 

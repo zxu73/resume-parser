@@ -85,14 +85,6 @@ class SmartResumeRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create all required in-memory sessions on startup
-    await session_service.create_session(
-        app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID
-    )
-    # Session for optimizer agent
-    await session_service.create_session(
-        app_name=APP_NAME, user_id=USER_ID, session_id=USER_ID + "_optimizer"
-    )
     yield
     # No cleanup needed for in-memory session service
 
@@ -208,9 +200,14 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
             role="user", parts=[types.Part(text=evaluation_prompt)]
         )
 
+        request_session_id = str(uuid.uuid4())
+        await session_service.create_session(
+            app_name=APP_NAME, user_id=USER_ID, session_id=request_session_id
+        )
+
         evaluation_report = ""
         async for event in evaluation_runner.run_async(
-            user_id=USER_ID, session_id=SESSION_ID, new_message=evaluation_content
+            user_id=USER_ID, session_id=request_session_id, new_message=evaluation_content
         ):
             if event.content and event.content.parts:
                 evaluation_report += event.content.parts[0].text
@@ -224,23 +221,25 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
             print(f"DEBUG: Failed to parse evaluation JSON: {e}")
             evaluation_data = {"raw_text": evaluation_report}
 
+        # ── Override job_match_percentage with deterministic calculation ──
+        matching = evaluation_data.get("matching_skills", [])
+        missing = evaluation_data.get("missing_skills", [])
+        total_skills = len(matching) + len(missing)
+        evaluation_data["job_match_percentage"] = (
+            round(len(matching) / total_skills * 100, 1) if total_skills > 0 else 0.0
+        )
+
         # ── Build structured context for rating agent ────────────────────
         missing_skills: list = evaluation_data.get("missing_skills", [])
-        weak_bullets: list = evaluation_data.get("weak_bullets", [])
 
         missing_block = "\n".join(
             f"  {i+1}. {s}" for i, s in enumerate(missing_skills)
         ) if missing_skills else "(none identified)"
 
-        weak_block = "\n".join(
-            f"  {i+1}. \"{b['text']}\"\n     Reason: {b['reason']}"
-            for i, b in enumerate(weak_bullets)
-            if isinstance(b, dict) and b.get("text")
-        ) if weak_bullets else "(none identified)"
-
         # ── Step 2: Rating Agent ─────────────────────────────────────────
         rating_prompt = f"""
-TASK: Rewrite the weak bullets identified below. Use exact JD keywords.
+TASK: Visit every bullet in the resume. For each, decide: add missing keywords (Rule A),
+improve STAR format (Rule B), or skip.
 
 ==================== JOB DESCRIPTION ====================
 {request.job_description}
@@ -253,18 +252,17 @@ Copy current_text from here EXACTLY — character-for-character.
 ==================== MISSING JD KEYWORDS ====================
 {missing_block}
 
-==================== WEAK BULLETS TO REWRITE ====================
-{weak_block}
-
 ==================== EVALUATION CONTEXT ====================
 Strengths: {json.dumps(evaluation_data.get("strengths", []))}
 Weaknesses: {json.dumps(evaluation_data.get("weaknesses", []))}
 
 INSTRUCTIONS:
-- Rewrite each weak bullet above using exact JD keywords from the missing list
+- Visit every bullet in the resume, one by one
+- If a missing skill can be plausibly added, rewrite in STAR format with the keyword → keyword_suggestions
+- If no keyword fits but the bullet can be improved (vague, weak verb, no result), rewrite in STAR format → star_suggestions
+- If neither, skip
 - current_text must be copied character-for-character from the resume
-- Only add a keyword when the candidate's work honestly supports it
-- If no keyword fits, improve the bullet for STAR impact instead
+- Each bullet appears in at most one section
 """
 
         rating_content = types.Content(
@@ -274,7 +272,7 @@ INSTRUCTIONS:
         rating_results = ""
         try:
             async for event in rating_runner.run_async(
-                user_id=USER_ID, session_id=SESSION_ID, new_message=rating_content
+                user_id=USER_ID, session_id=request_session_id, new_message=rating_content
             ):
                 if event.content and event.content.parts:
                     rating_results += event.content.parts[0].text
@@ -291,29 +289,60 @@ INSTRUCTIONS:
             rating_data = {"raw_text": rating_results}
 
         # ── Post-processing: sanitize keyword claims ────────────────
-        for rec in rating_data.get("priority_recommendations", []):
+        import re as _re
+
+        def _sanitize_rec(rec: dict) -> None:
+            """Clean up alignment_reason to remove claims about keywords not in suggested_text.
+            Does NOT modify keywords_added — section routing uses the original LLM-reported list."""
             sug = rec.get("paraphrasing_suggestion")
             if not sug:
-                continue
-            suggested = sug.get("suggested_text", "")
-            # Remove keywords_added entries not literally in suggested_text
+                return
+            suggested_lower = sug.get("suggested_text", "").lower()
             original_kw = sug.get("keywords_added", [])
-            valid_kw = [kw for kw in original_kw if kw in suggested]
-            removed_kw = [kw for kw in original_kw if kw not in suggested]
-            sug["keywords_added"] = valid_kw
-            # Strip false keyword claims from alignment_reason
+            removed_kw = [kw for kw in original_kw if kw.lower() not in suggested_lower]
             reason = sug.get("alignment_reason", "")
             for kw in removed_kw:
                 reason = reason.replace(f"'{kw}'", "").replace(f'"{kw}"', "").replace(kw, "")
-            # Clean up leftover artifacts (double spaces, empty conjunctions)
-            import re as _re
             reason = _re.sub(r"\s*,\s*,", ",", reason)
             reason = _re.sub(r"\s*and\s*and\s*", " and ", reason)
             reason = _re.sub(r"\s{2,}", " ", reason).strip()
             reason = _re.sub(r"^[,\s]+|[,\s]+$", "", reason)
             sug["alignment_reason"] = reason
             if removed_kw:
-                print(f"DEBUG: Stripped invalid keywords {removed_kw} from recommendation '{rec.get('title', '')}'")
+                print(f"DEBUG: Cleaned alignment_reason for missing keywords {removed_kw} in '{rec.get('title', '')}'")
+
+        for rec in rating_data.get("keyword_suggestions", []):
+            _sanitize_rec(rec)
+        for rec in rating_data.get("star_suggestions", []):
+            _sanitize_rec(rec)
+
+        # ── Move keyword entries with empty keywords_added to star_suggestions
+        # Uses original LLM-reported keywords_added (not stripped) for routing.
+        # Only items where LLM itself said keywords_added=[] belong in star_suggestions.
+        real_keyword = []
+        for rec in rating_data.get("keyword_suggestions", []):
+            sug = rec.get("paraphrasing_suggestion", {})
+            if sug.get("keywords_added"):  # non-empty list = LLM claimed keyword insertion
+                real_keyword.append(rec)
+            else:
+                rating_data.setdefault("star_suggestions", []).append(rec)
+                print(f"DEBUG: Moved '{rec.get('title', '')}' to star_suggestions (LLM reported empty keywords_added)")
+        rating_data["keyword_suggestions"] = real_keyword
+
+        # ── Deduplicate: drop star entries whose bullet is already in keyword section
+        keyword_texts = {
+            rec.get("paraphrasing_suggestion", {}).get("current_text", "").strip()
+            for rec in rating_data.get("keyword_suggestions", [])
+        }
+        original_count = len(rating_data.get("star_suggestions", []))
+        rating_data["star_suggestions"] = [
+            rec for rec in rating_data.get("star_suggestions", [])
+            if rec.get("paraphrasing_suggestion", {}).get("current_text", "").strip()
+            not in keyword_texts
+        ]
+        removed = original_count - len(rating_data.get("star_suggestions", []))
+        if removed:
+            print(f"DEBUG: Removed {removed} overlapping star_suggestion(s)")
 
         return {
             "success": True,
@@ -380,9 +409,14 @@ async def analyze_experience_swaps(request: SmartResumeRequest):
             role="user", parts=[types.Part(text=optimizer_prompt)]
         )
         
+        optimizer_session_id = str(uuid.uuid4())
+        await session_service.create_session(
+            app_name=APP_NAME, user_id=USER_ID, session_id=optimizer_session_id
+        )
+
         optimization_result = ""
         async for event in optimizer_runner.run_async(
-            user_id=USER_ID, session_id=USER_ID + "_optimizer", new_message=optimizer_content
+            user_id=USER_ID, session_id=optimizer_session_id, new_message=optimizer_content
         ):
             if event.is_final_response() and event.content and event.content.parts:
                 optimization_result = event.content.parts[0].text
@@ -439,7 +473,7 @@ async def apply_swaps_docx(request: ApplySwapsRequest):
     _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
     def norm(t: str) -> str:
-        return _re.sub(r"\\s+", " ", t).strip()
+        return _re.sub(r"\s+", " ", t).strip()
 
     def para_full_text(para) -> str:
         return "".join(

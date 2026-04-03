@@ -16,10 +16,6 @@ def _model() -> LiteLlm:
 
 # ── Evaluation Agent schema ──────────────────────────────────────────────
 
-class WeakBullet(BaseModel):
-    text: str = Field(..., description="Exact bullet text copied character-for-character from the resume")
-    reason: str = Field(..., description="Why this bullet is weak relative to the JD")
-
 class EvaluationResponse(BaseModel):
     executive_summary: str
     overall_score: float = Field(..., ge=1, le=10)
@@ -28,7 +24,6 @@ class EvaluationResponse(BaseModel):
     weaknesses: List[str]
     missing_skills: List[str]
     matching_skills: List[str]
-    weak_bullets: List[WeakBullet] = Field(..., min_length=10, max_length=20)
 
 # ── Rating Agent schema ──────────────────────────────────────────────────
 
@@ -90,13 +85,13 @@ class RatingResponse(BaseModel):
     detailed_ratings: DetailedRatings
     keyword_suggestions: List[PriorityRecommendation] = Field(
         ...,
-        min_length=10,
+        min_length=0,
         max_length=15,
         description="Suggestions that insert missing JD skills. Each must have non-empty keywords_added.",
     )
     star_suggestions: List[PriorityRecommendation] = Field(
         ...,
-        min_length=5,
+        min_length=0,
         max_length=10,
         description="STAR-format improvements only. Each must have keywords_added: [].",
     )
@@ -151,7 +146,7 @@ evaluation_agent = LlmAgent(
     output_schema=EvaluationResponse,
     instruction=(
         "You are a resume evaluation specialist. Your output feeds directly into a rewriting agent,\n"
-        "so accuracy and completeness of missing_skills and weak_bullets are critical.\n"
+        "so accuracy and completeness of missing_skills is critical.\n"
         "Respond with structured JSON matching the schema. No markdown, no explanations.\n\n"
 
         "=== FIELDS ===\n"
@@ -163,21 +158,16 @@ evaluation_agent = LlmAgent(
         "6. missing_skills — EXHAUSTIVE list of every keyword, skill, tool, framework, and methodology\n"
         "   mentioned in the JD but absent from the resume. Use the EXACT wording from the JD.\n"
         "   This list drives ATS keyword insertion downstream — do NOT omit minor skills.\n"
-        "7. matching_skills — skills present in both resume and JD.\n"
-        "8. weak_bullets (10-20 items) — the weakest bullet points in the resume relative to the JD.\n"
-        "   For each: copy the EXACT text from the resume into `text`, and explain in `reason`\n"
-        "   why it is weak (missing STAR result, vague language, no JD keywords, etc.).\n"
-        "   Prioritize bullets that could be improved by adding missing skills.\n\n"
+        "7. matching_skills — skills present in both resume and JD.\n\n"
 
         "=== GUIDELINES ===\n"
         "- Do NOT recommend adding a Professional Summary.\n"
-        "- Flag bullets missing STAR Action or Result as weak.\n"
         "- For missing_skills, go beyond obvious ones — include specific tools, certifications,\n"
         "  methodologies, and soft skills mentioned in the JD.\n\n"
 
         "OUTPUT FORMAT: Return ONLY valid JSON matching the schema."
     ),
-    description="Evaluates resumes and identifies weak bullets and missing skills for the rewriting agent.",
+    description="Evaluates resumes and identifies missing skills for the rewriting agent.",
     tools=[],
 )
 
@@ -246,22 +236,29 @@ rating_agent = LlmAgent(
         "- experience_relevance: alignment with JD requirements\n\n"
 
         "=== SECTION 2: PER-BULLET DECISION PASS ===\n"
-        "You will receive WEAK BULLETS and MISSING SKILLS from the evaluation agent.\n"
+        "You will receive MISSING SKILLS from the evaluation agent.\n"
         "Visit every bullet in the resume exactly once, in order. For each bullet apply\n"
         "exactly ONE rule — never both, never the same bullet in both output lists.\n\n"
+
         "RULE A → emit into keyword_suggestions (target 10-15 items total):\n"
         "  Condition: at least one MISSING SKILL can be honestly woven into this bullet.\n"
-        "  'Honestly' means the bullet describes work that plausibly involved that skill\n"
-        "  even if the candidate didn't name it (e.g. 'built APIs' + JD 'REST APIs').\n"
+        "  Be GENEROUS — if the bullet describes work that could plausibly involve\n"
+        "  a JD skill, insert it. The candidate likely used it but didn't name it.\n"
         "  Action: rewrite the bullet in full STAR format AND embed every fitting missing\n"
         "  skill verbatim. List each in keywords_added (each must be a literal substring\n"
         "  of suggested_text). keywords_added must be non-empty.\n\n"
+
         "RULE B → emit into star_suggestions (target 5-10 items total):\n"
-        "  Condition: no missing skill fits this bullet AND it can be meaningfully improved\n"
-        "  (vague, weak verb, lacks a result, no STAR structure, buries impact).\n"
+        "  Condition: no missing skill plausibly fits this bullet AND it can be meaningfully\n"
+        "  improved (vague, weak verb, lacks a result, no STAR structure, buries impact).\n"
         "  Action: rewrite in full STAR format only. keywords_added must be [].\n"
         "  Do NOT apply if the bullet is already clear and well-structured.\n\n"
+
         "SKIP: no missing skill fits AND the bullet is already strong → do not emit it.\n\n"
+
+        "NO DUPLICATES: Each bullet's current_text must appear in at most one section.\n"
+        "Never suggest changes to the same bullet twice.\n\n"
+
         "KEYWORD COVERAGE: after the per-bullet pass, check which missing skills are still\n"
         "unplaced. For each unplaced skill, find the best already-selected Rule-A bullet\n"
         "that can carry it and add it there. Each missing skill should appear in AT MOST\n"
@@ -287,7 +284,7 @@ rating_agent = LlmAgent(
         "2. NEVER invent entire projects or job responsibilities. But DO name JD skills when the bullet's context plausibly involves them.\n"
         "3. For each: priority | title (exact job title from resume) | description | specific_example\n"
         "4. paraphrasing_suggestion fields:\n"
-        "   current_text — copy the weak bullet character-for-character (include bullet symbol)\n"
+        "   current_text — copy the bullet character-for-character (include bullet symbol)\n"
         "   suggested_text — STAR format; keyword_suggestions: embed exact keyword strings; star_suggestions: STAR-only polish, no keywords\n"
         "   keywords_added — keyword_suggestions: exact copy from MISSING SKILLS, each a substring of suggested_text; star_suggestions: always []\n"
         "   job_requirement_reference — quote the JD sentence this bullet better addresses\n"
@@ -301,6 +298,6 @@ rating_agent = LlmAgent(
         "OUTPUT FORMAT: Return ONLY valid JSON matching RatingResponse schema.\n"
         "The JSON must have keys: detailed_ratings, keyword_suggestions, star_suggestions."
     ),
-    description="Rewrites weak resume bullets with exact JD keywords for ATS optimization.",
+    description="Rewrites resume bullets: adds missing JD keywords or improves STAR format.",
     tools=[],
 )
