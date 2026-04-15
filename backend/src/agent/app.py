@@ -1,4 +1,5 @@
 # mypy: disable - error - code = "no-untyped-def,misc"
+import os
 import pathlib
 from fastapi import FastAPI, Response, Request, File, UploadFile, HTTPException, Depends, status
 from fastapi.staticfiles import StaticFiles
@@ -8,7 +9,7 @@ from .tools import analyze_resume_file
 import json
 import asyncio
 from contextlib import asynccontextmanager
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -19,8 +20,6 @@ import uuid
 # --- ADK Setup ---
 # This follows the modern programmatic pattern for running an ADK agent.
 APP_NAME = "resume-optimizer-app"
-USER_ID = "default_user"
-SESSION_ID = "default_session"
 
 # 1. Set up session management
 session_service = InMemorySessionService()
@@ -68,8 +67,15 @@ def _load_doc(file_id: str) -> bytes | None:
 
 # Pydantic models for request/response
 class ResumeEvaluationRequest(BaseModel):
-    resume_text: str
-    job_description: str
+    resume_text: str = Field(max_length=30000)
+    job_description: str = Field(max_length=50000)
+
+    @field_validator('resume_text', 'job_description')
+    @classmethod
+    def not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError('must not be empty or whitespace-only')
+        return v
 
 class ExperienceItem(BaseModel):
     title: str
@@ -79,9 +85,34 @@ class ExperienceItem(BaseModel):
     skills: list[str] = []
 
 class SmartResumeRequest(BaseModel):
+    resume_text: str = Field(max_length=30000)
+    job_description: str = Field(max_length=50000)
+    pool_experiences: list[ExperienceItem] = []  # Optional pool of additional experiences
+
+    @field_validator('resume_text', 'job_description')
+    @classmethod
+    def not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError('must not be empty or whitespace-only')
+        return v
+
+
+class ChatMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
+
+class ChatSuggestion(BaseModel):
+    current_text: str
+    suggested_text: str
+    reason: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    conversation_history: list[ChatMessage] = []
     resume_text: str
     job_description: str
-    pool_experiences: list[ExperienceItem] = []  # Optional pool of additional experiences
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -200,14 +231,15 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
             role="user", parts=[types.Part(text=evaluation_prompt)]
         )
 
+        request_user_id = str(uuid.uuid4())
         request_session_id = str(uuid.uuid4())
         await session_service.create_session(
-            app_name=APP_NAME, user_id=USER_ID, session_id=request_session_id
+            app_name=APP_NAME, user_id=request_user_id, session_id=request_session_id
         )
 
         evaluation_report = ""
         async for event in evaluation_runner.run_async(
-            user_id=USER_ID, session_id=request_session_id, new_message=evaluation_content
+            user_id=request_user_id, session_id=request_session_id, new_message=evaluation_content
         ):
             if event.content and event.content.parts:
                 evaluation_report += event.content.parts[0].text
@@ -272,7 +304,7 @@ INSTRUCTIONS:
         rating_results = ""
         try:
             async for event in rating_runner.run_async(
-                user_id=USER_ID, session_id=request_session_id, new_message=rating_content
+                user_id=request_user_id, session_id=request_session_id, new_message=rating_content
             ):
                 if event.content and event.content.parts:
                     rating_results += event.content.parts[0].text
@@ -409,14 +441,15 @@ async def analyze_experience_swaps(request: SmartResumeRequest):
             role="user", parts=[types.Part(text=optimizer_prompt)]
         )
         
+        optimizer_user_id = str(uuid.uuid4())
         optimizer_session_id = str(uuid.uuid4())
         await session_service.create_session(
-            app_name=APP_NAME, user_id=USER_ID, session_id=optimizer_session_id
+            app_name=APP_NAME, user_id=optimizer_user_id, session_id=optimizer_session_id
         )
 
         optimization_result = ""
         async for event in optimizer_runner.run_async(
-            user_id=USER_ID, session_id=optimizer_session_id, new_message=optimizer_content
+            user_id=optimizer_user_id, session_id=optimizer_session_id, new_message=optimizer_content
         ):
             if event.is_final_response() and event.content and event.content.parts:
                 optimization_result = event.content.parts[0].text
@@ -847,10 +880,72 @@ async def download_modified_docx(request: ModifyDocxRequest):
     )
 
 
+# === CHATBOT ENDPOINT ===
+
+@app.post("/chat")
+async def chat_endpoint(request: ChatRequest):
+    """Conversational resume improvement assistant.
+
+    Accepts the user's message and conversation history, then returns a reply
+    and optional bullet rewrites that the user can add to their review queue.
+    """
+    import litellm as _litellm
+
+    system_prompt = (
+        "You are BetterCV, an expert resume improvement assistant. "
+        "Help the user improve their resume for the given job description.\n\n"
+        "When the user asks to improve or rewrite specific bullets, identify the relevant "
+        "bullet(s) from the resume and suggest improved versions in STAR format:\n"
+        "  [Strong past-tense verb] + [technical context/approach] + [result or impact]\n\n"
+        "RESUME TEXT:\n"
+        f"{request.resume_text}\n\n"
+        "JOB DESCRIPTION:\n"
+        f"{request.job_description}\n\n"
+        "RESPONSE FORMAT — always return valid JSON with exactly these keys:\n"
+        '{{\n'
+        '  "reply": "Your conversational response to the user",\n'
+        '  "suggestions": [\n'
+        '    {{\n'
+        '      "current_text": "Exact bullet text copied from the resume",\n'
+        '      "suggested_text": "Improved STAR-format version",\n'
+        '      "reason": "One sentence on why this is better"\n'
+        '    }}\n'
+        '  ]\n'
+        '}}\n\n'
+        "Rules:\n"
+        "- suggestions must be [] when no specific rewrites are needed (e.g. questions, general discussion)\n"
+        "- current_text must be copied verbatim from the resume — do not invent new bullets\n"
+        "- Do NOT fabricate metrics, project names, or skills the user never mentioned\n"
+        "- Be specific and actionable in your reply\n"
+        "- Return ONLY valid JSON — no markdown fences, no extra text"
+    )
+
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    for msg in request.conversation_history:
+        messages.append({"role": msg.role, "content": msg.content})
+    messages.append({"role": "user", "content": request.message})
+
+    response = await _litellm.acompletion(
+        model=f"openai/{os.getenv('REASONING_MODEL', 'gpt-4o-mini')}",
+        messages=messages,
+        response_format={"type": "json_object"},
+    )
+
+    content = response.choices[0].message.content or "{}"
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        data = {"reply": content, "suggestions": []}
+
+    return {
+        "reply": data.get("reply", ""),
+        "suggestions": data.get("suggestions", []),
+    }
+
+
 # === FRONTEND STATIC FILES ===
 # Mount React frontend after all API routes (must be last)
 
-import os
 from pathlib import Path
 
 frontend_dist_path = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"

@@ -8,7 +8,7 @@ import os
 import re
 from typing import Dict, Any, List
 from openai import OpenAI
-import PyPDF2
+import fitz  # pymupdf
 import io
 import docx
 
@@ -27,11 +27,10 @@ def _chat(prompt: str, max_tokens: int = 4000) -> str:
 def extract_text_from_pdf(content: bytes) -> str:
     """Extract text from PDF content"""
     try:
-        pdf_file = io.BytesIO(content)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        doc = fitz.open(stream=content, filetype="pdf")
         text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text() + "\n"
+        for page in doc:
+            text += page.get_text() + "\n"
         return text.strip()
     except Exception as e:
         return f"Error extracting PDF text: {str(e)}"

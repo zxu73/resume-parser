@@ -5,6 +5,9 @@ import { AnalysisDashboard } from './components/AnalysisDashboard';
 import { ExperienceManager, Experience } from './components/ExperienceManager';
 import { SwapReview } from './components/SwapReview';
 import { AnalysisResult } from './types/analysis';
+import { useResumeUpload } from './hooks/useResumeUpload';
+import { useResumeEvaluation } from './hooks/useResumeEvaluation';
+import { useExperienceSwap, SwapItem } from './hooks/useExperienceSwap';
 
 export default function App() {
   // State management
@@ -17,8 +20,12 @@ export default function App() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { uploadResume } = useResumeUpload();
+  const { evaluateResume } = useResumeEvaluation();
+  const { analyzeSwaps, applySwaps } = useExperienceSwap();
 
   // File upload handler
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -33,12 +40,12 @@ export default function App() {
         setError('Please upload a Word document (.docx)');
         return;
       }
-      
+
       if (file.size > 10 * 1024 * 1024) { // 10MB limit
         setError('File size must be less than 10MB');
         return;
       }
-      
+
       setSelectedFile(file);
       setError(null);
     }
@@ -55,124 +62,17 @@ export default function App() {
     setError(null);
 
     try {
-      let resumeText = '';
-      
-      // Upload .docx to backend for text extraction
-      {
-        const formData = new FormData();
-        formData.append('file', selectedFile);
-        
-        const uploadResponse = await fetch('/upload-resume', {
-          method: 'POST',
-          body: formData
-        });
-        
-        if (!uploadResponse.ok) {
-          const errorData = await uploadResponse.json();
-          throw new Error(errorData.detail || 'Failed to upload resume');
-        }
-        
-        const uploadResult = await uploadResponse.json();
-        
-        if (!uploadResult.success) {
-          throw new Error(uploadResult.error || 'Resume analysis failed');
-        }
-        
-        resumeText = uploadResult.extracted_text || uploadResult.analysis || `Resume analysis for ${selectedFile.name}`;
+      const { resumeText: text, docId: id } = await uploadResume(selectedFile);
+      setResumeText(text);
+      if (id) setDocId(id);
 
-        // Store doc_id for the viewer
-        if (uploadResult.doc_id) {
-          setDocId(uploadResult.doc_id);
-        }
-      }
-
-      // Store resume text for later use
-      setResumeText(resumeText);
-
-      // If pool experiences provided, use two-step workflow
       if (experiences.length > 0) {
-        // Step 1: Get swap recommendations
-        const analyzeResponse = await fetch('/analyze-experience-swaps', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            resume_text: resumeText,
-            job_description: jobDescription,
-            pool_experiences: experiences.map(exp => ({
-              title: exp.title,
-              company: exp.company,
-              duration: exp.duration,
-              description: exp.description,
-              skills: exp.skills
-            }))
-          })
-        });
-
-        if (!analyzeResponse.ok) {
-          let errorMessage = 'Analysis failed';
-          try {
-            const errorData = await analyzeResponse.json();
-            errorMessage = errorData.detail || errorMessage;
-          } catch (e) {
-            errorMessage = `Server error: ${analyzeResponse.status} ${analyzeResponse.statusText}`;
-          }
-          throw new Error(errorMessage);
-        }
-
-        let analyzeResult;
-        try {
-          analyzeResult = await analyzeResponse.json();
-        } catch (e) {
-          throw new Error('Invalid response from server. Please check if backend is running.');
-        }
-        
-        if (!analyzeResult.success) {
-          throw new Error(analyzeResult.message || 'Analysis failed');
-        }
-
-        // Show swap recommendations for user review
-        setSwapRecommendations(analyzeResult.optimization_analysis);
+        const swapData = await analyzeSwaps(text, jobDescription, experiences);
+        setSwapRecommendations(swapData.optimization_analysis);
       } else {
-        // No pool experiences - use regular evaluation
-        const evaluationResponse = await fetch('/evaluate-resume', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            resume_text: resumeText,
-            job_description: jobDescription
-          })
-        });
-
-      if (!evaluationResponse.ok) {
-        let errorMessage = 'Analysis failed';
-        try {
-          const errorData = await evaluationResponse.json();
-          errorMessage = errorData.detail || errorMessage;
-        } catch (e) {
-          // If JSON parsing fails, use status text
-          errorMessage = `Server error: ${evaluationResponse.status} ${evaluationResponse.statusText}`;
-        }
-        throw new Error(errorMessage);
-      }
-
-        let result;
-        try {
-          result = await evaluationResponse.json();
-        } catch (e) {
-          throw new Error('Invalid response from server. Please check if backend is running properly.');
-        }
-        
-        if (!result.success) {
-          throw new Error(result.message || 'Analysis failed');
-        }
-        
+        const result = await evaluateResume(text, jobDescription);
         setAnalysisResult(result);
       }
-
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
@@ -188,8 +88,7 @@ export default function App() {
     setError(null);
 
     try {
-      // Build swap list from accepted comparisons
-      const swaps = swapRecommendations.comparisons
+      const swaps: SwapItem[] = swapRecommendations.comparisons
         .filter((c: any) => c.should_replace)
         .map((comparison: any) => {
           const poolExp = experiences[comparison.pool_experience_index];
@@ -202,51 +101,13 @@ export default function App() {
           };
         });
 
-      // Apply swaps to the actual Word document on the backend
-      const swapRes = await fetch('/apply-swaps-docx', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_id: docId, swaps }),
-      });
+      const { docId: newDocId, modifiedResumeText } = await applySwaps(docId, swaps, resumeText);
+      setDocId(newDocId);
+      setResumeText(modifiedResumeText);
 
-      if (!swapRes.ok) {
-        const errData = await swapRes.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Failed to apply swaps to document');
-      }
-
-      const swapResult = await swapRes.json();
-      if (!swapResult.success) {
-        throw new Error('Failed to apply swaps to document');
-      }
-
-      // Update docId to the new modified document
-      setDocId(swapResult.doc_id);
-      const modifiedResume = swapResult.modified_resume_text || resumeText;
-      setResumeText(modifiedResume);
-
-      // Evaluate the modified resume
-      const response = await fetch('/evaluate-resume', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          resume_text: modifiedResume,
-          job_description: jobDescription,
-        }),
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.detail || `Server error: ${response.status}`);
-      }
-
-      const result = await response.json();
-      if (!result.success) {
-        throw new Error(result.message || 'Analysis failed');
-      }
-
+      const result = await evaluateResume(modifiedResumeText, jobDescription);
       setAnalysisResult(result);
       setSwapRecommendations(null);
-
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply swaps and analyze');
     } finally {
@@ -262,42 +123,9 @@ export default function App() {
     setError(null);
 
     try {
-      const response = await fetch('/evaluate-resume', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          resume_text: resumeText,
-          job_description: jobDescription
-        })
-      });
-
-      if (!response.ok) {
-        let errorMessage = 'Analysis failed';
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.detail || errorMessage;
-        } catch (e) {
-          errorMessage = `Server error: ${response.status} ${response.statusText}`;
-        }
-        throw new Error(errorMessage);
-      }
-
-      let result;
-      try {
-        result = await response.json();
-      } catch (e) {
-        throw new Error('Invalid response from server. Please check if backend is running.');
-      }
-
-      if (!result.success) {
-        throw new Error(result.message || 'Analysis failed');
-      }
-
+      const result = await evaluateResume(resumeText, jobDescription);
       setAnalysisResult(result);
-      setSwapRecommendations(null); // Clear recommendations
-
+      setSwapRecommendations(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to analyze');
     } finally {
@@ -328,10 +156,10 @@ export default function App() {
 
       {/* Error Display */}
       {error && (
-        <div style={{ 
-          backgroundColor: '#ffebee', 
-          border: '1px solid #f44336', 
-          padding: '10px', 
+        <div style={{
+          backgroundColor: '#ffebee',
+          border: '1px solid #f44336',
+          padding: '10px',
           marginBottom: '20px',
           borderRadius: '4px',
           color: '#d32f2f'
@@ -391,18 +219,18 @@ export default function App() {
       {/* Experience Pool Manager */}
       <div style={{ marginBottom: '20px' }}>
         <h2>3. Additional Experiences (Optional)</h2>
-        <div style={{ 
-          backgroundColor: '#e3f2fd', 
-          padding: '15px', 
-          borderRadius: '8px', 
+        <div style={{
+          backgroundColor: '#e3f2fd',
+          padding: '15px',
+          borderRadius: '8px',
           marginBottom: '15px',
           fontSize: '14px'
         }}>
-          <strong>💡 Smart Feature:</strong> Add all your work experiences here. 
-          Our AI will automatically select the best ones that match the job and 
+          <strong>💡 Smart Feature:</strong> Add all your work experiences here.
+          Our AI will automatically select the best ones that match the job and
           ensure your resume fits on 1 page by removing less relevant experiences.
         </div>
-        <ExperienceManager 
+        <ExperienceManager
           experiences={experiences}
           onExperiencesChange={setExperiences}
         />
@@ -417,7 +245,7 @@ export default function App() {
         >
           {isAnalyzing ? 'Analyzing...' : 'Start Analysis'}
         </Button>
-        
+
         {(selectedFile || jobDescription || analysisResult || experiences.length > 0) && (
           <Button onClick={resetForm} variant="outline">
             Reset
@@ -427,9 +255,9 @@ export default function App() {
 
       {/* Loading State */}
       {isAnalyzing && (
-        <div style={{ 
-          backgroundColor: '#e3f2fd', 
-          padding: '20px', 
+        <div style={{
+          backgroundColor: '#e3f2fd',
+          padding: '20px',
           borderRadius: '4px',
           marginBottom: '20px'
         }}>
@@ -467,14 +295,15 @@ export default function App() {
       {analysisResult && !swapRecommendations && (
         <div>
           <h2>4. Analysis Results</h2>
-          
+
           <div className="mt-6">
             {analysisResult.structured_evaluation && analysisResult.structured_rating ? (
-              <AnalysisDashboard 
+              <AnalysisDashboard
                 evaluation={analysisResult.structured_evaluation}
                 rating={analysisResult.structured_rating}
                 originalResumeText={resumeText}
                 docId={docId ?? undefined}
+                jobDescription={jobDescription}
               />
             ) : (
               <div className="p-6 bg-yellow-50 border border-yellow-200 rounded-lg">

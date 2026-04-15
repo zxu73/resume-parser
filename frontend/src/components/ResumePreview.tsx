@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import mammoth from 'mammoth';
-import { StructuredRating, PriorityRecommendation } from '../types/analysis';
+import { StructuredRating, PriorityRecommendation, ChatSuggestion } from '../types/analysis';
 import { Button } from './ui/button';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -9,9 +9,10 @@ interface ResumePreviewProps {
   docId?: string;
   resumeText?: string;   // fallback for plain-text uploads
   rating: StructuredRating;
+  chatSuggestions?: ChatSuggestion[];
 }
 
-type SectionKey = 'keyword' | 'star';
+type SectionKey = 'keyword' | 'star' | 'chat';
 
 interface Change {
   idx: number;          // global index used for approve/skip sets
@@ -24,7 +25,7 @@ interface Change {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function buildChanges(rating: StructuredRating): Change[] {
+function buildChanges(rating: StructuredRating, chatSuggestions?: ChatSuggestion[]): Change[] {
   const changes: Change[] = [];
   let idx = 0;
   (rating.keyword_suggestions ?? []).forEach((rec) => {
@@ -37,6 +38,24 @@ function buildChanges(rating: StructuredRating): Change[] {
     const s = rec.paraphrasing_suggestion;
     if (s?.current_text && s?.suggested_text) {
       changes.push({ idx: idx++, rec, currentText: s.current_text, suggestedText: s.suggested_text, reason: s.alignment_reason, section: 'star' });
+    }
+  });
+  (chatSuggestions ?? []).forEach((s) => {
+    if (s.current_text && s.suggested_text) {
+      const rec: PriorityRecommendation = {
+        priority: 'High',
+        title: 'Your Request',
+        description: s.reason,
+        specific_example: s.suggested_text,
+        paraphrasing_suggestion: {
+          current_text: s.current_text,
+          suggested_text: s.suggested_text,
+          keywords_added: [],
+          job_requirement_reference: '',
+          alignment_reason: s.reason,
+        },
+      };
+      changes.push({ idx: idx++, rec, currentText: s.current_text, suggestedText: s.suggested_text, reason: s.reason, section: 'chat' });
     }
   });
   return changes;
@@ -63,6 +82,7 @@ const HIGHLIGHT_STYLE = `
 const SECTION_LABELS: Record<SectionKey, string> = {
   keyword: 'Missing Skills',
   star: 'STAR Improvements',
+  chat: 'Your Requests',
 };
 
 const ChangeCard: React.FC<{
@@ -221,14 +241,16 @@ const TextFallback: React.FC<{ resumeText: string; changes: Change[]; approved: 
 
 // ── Main component ─────────────────────────────────────────────────────────
 
-export const ResumePreview: React.FC<ResumePreviewProps> = ({ docId, resumeText, rating }) => {
-  const changes = buildChanges(rating);
+export const ResumePreview: React.FC<ResumePreviewProps> = ({ docId, resumeText, rating, chatSuggestions }) => {
+  const changes = buildChanges(rating, chatSuggestions);
   const keywordChanges = changes.filter((c) => c.section === 'keyword');
   const starChanges = changes.filter((c) => c.section === 'star');
+  const chatChanges = changes.filter((c) => c.section === 'chat');
 
   const [activeSection, setActiveSection] = useState<SectionKey>('keyword');
   const [keywordIdx, setKeywordIdx] = useState(0);
   const [starIdx, setStarIdx] = useState(0);
+  const [chatIdx, setChatIdx] = useState(0);
   const [approved, setApproved] = useState<Set<number>>(new Set());
   const [skipped, setSkipped] = useState<Set<number>>(new Set());
   const [isDownloading, setIsDownloading] = useState(false);
@@ -236,9 +258,9 @@ export const ResumePreview: React.FC<ResumePreviewProps> = ({ docId, resumeText,
   const [docLoading, setDocLoading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const sectionChanges = activeSection === 'keyword' ? keywordChanges : starChanges;
-  const sectionIdx = activeSection === 'keyword' ? keywordIdx : starIdx;
-  const setSectionIdx = activeSection === 'keyword' ? setKeywordIdx : setStarIdx;
+  const sectionChanges = activeSection === 'keyword' ? keywordChanges : activeSection === 'star' ? starChanges : chatChanges;
+  const sectionIdx = activeSection === 'keyword' ? keywordIdx : activeSection === 'star' ? starIdx : chatIdx;
+  const setSectionIdx = activeSection === 'keyword' ? setKeywordIdx : activeSection === 'star' ? setStarIdx : setChatIdx;
 
   // Load Word document via mammoth when docId is provided
   useEffect(() => {
@@ -399,8 +421,8 @@ export const ResumePreview: React.FC<ResumePreviewProps> = ({ docId, resumeText,
         >
           {/* Tab bar */}
           <div className="flex border-b border-gray-200">
-            {(['keyword', 'star'] as SectionKey[]).map((key) => {
-              const count = key === 'keyword' ? keywordChanges.length : starChanges.length;
+            {((['keyword', 'star'] as SectionKey[]).concat(chatChanges.length > 0 ? ['chat' as SectionKey] : [])).map((key) => {
+              const count = key === 'keyword' ? keywordChanges.length : key === 'star' ? starChanges.length : chatChanges.length;
               const label = SECTION_LABELS[key];
               const isActive = activeSection === key;
               return (

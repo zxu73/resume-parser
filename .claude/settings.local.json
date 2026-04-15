@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'src'\\); from src.agent.tools import extract_text_from_pdf, extract_text_from_docx; print\\('tools.py: OK'\\)\")",
+      "Bash(python -m py_compile src/agent/tools.py)",
+      "Bash(python -m py_compile src/agent/app.py)",
+      "Bash(npx tsc:*)",
+      "Bash(uv run python -c ':*)",
+      "Bash(node -e ':*)"
+    ]
+  }
+}

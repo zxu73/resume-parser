@@ -1,14 +1,16 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Card } from './ui/card';
 import { Badge } from './ui/badge';
 import { ResumePreview } from './ResumePreview';
-import { StructuredEvaluation, StructuredRating } from '../types/analysis';
+import { ChatBot } from './ChatBot';
+import { StructuredEvaluation, StructuredRating, ChatSuggestion } from '../types/analysis';
 
 interface AnalysisDashboardProps {
   evaluation: StructuredEvaluation;
   rating: StructuredRating;
   originalResumeText?: string;
   docId?: string;
+  jobDescription?: string;
 }
 
 const ScoreBar: React.FC<{ score: number; maxScore: number; label: string }> = ({ score, maxScore, label }) => {
@@ -46,7 +48,13 @@ function computeBetterCVScore(evaluation: StructuredEvaluation, rating: Structur
   return Math.round(jobMatch + quality + relevance);
 }
 
-export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation, rating, originalResumeText, docId }) => {
+export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation, rating, originalResumeText, docId, jobDescription }) => {
+  const [chatSuggestions, setChatSuggestions] = useState<ChatSuggestion[]>([]);
+
+  const handleAddChatSuggestion = (suggestion: ChatSuggestion) => {
+    setChatSuggestions((prev) => [...prev, suggestion]);
+  };
+
   if (!evaluation || !rating) {
     return (
       <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
@@ -61,6 +69,7 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation
   const scoreColor = betterCVScore >= 80 ? 'text-green-600' : betterCVScore >= 60 ? 'text-yellow-600' : 'text-red-600';
 
   return (
+    <>
     <div className="space-y-6">
       {/* Executive Summary & Overall Scores */}
       <Card className="p-6">
@@ -157,8 +166,19 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation
           docId={docId}
           resumeText={originalResumeText}
           rating={rating}
+          chatSuggestions={chatSuggestions}
         />
       )}
     </div>
+
+    {/* Floating chatbot — shown whenever we have resume text and a job description */}
+    {originalResumeText && jobDescription && (
+      <ChatBot
+        resumeText={originalResumeText}
+        jobDescription={jobDescription}
+        onAddSuggestion={handleAddChatSuggestion}
+      />
+    )}
+    </>
   );
 };

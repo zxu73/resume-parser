@@ -48,3 +48,14 @@ export interface AnalysisResult {
   workflow_type: string;
   message: string;
 }
+
+export interface ChatSuggestion {
+  current_text: string;
+  suggested_text: string;
+  reason: string;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
