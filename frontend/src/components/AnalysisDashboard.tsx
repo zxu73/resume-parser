@@ -50,6 +50,7 @@ function computeBetterCVScore(evaluation: StructuredEvaluation, rating: Structur
 
 export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation, rating, originalResumeText, docId, jobDescription }) => {
   const [chatSuggestions, setChatSuggestions] = useState<ChatSuggestion[]>([]);
+  const [currentDocId, setCurrentDocId] = useState(docId);
 
   const handleAddChatSuggestion = (suggestion: ChatSuggestion) => {
     setChatSuggestions((prev) => [...prev, suggestion]);
@@ -161,9 +162,9 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation
       </div>
 
       {/* Resume Preview & Changes */}
-      {(docId || originalResumeText) && (
+      {(currentDocId || originalResumeText) && (
         <ResumePreview
-          docId={docId}
+          docId={currentDocId}
           resumeText={originalResumeText}
           rating={rating}
           chatSuggestions={chatSuggestions}
@@ -177,6 +178,8 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ evaluation
         resumeText={originalResumeText}
         jobDescription={jobDescription}
         onAddSuggestion={handleAddChatSuggestion}
+        docId={currentDocId}
+        onDocUpdated={(id) => setCurrentDocId(id)}
       />
     )}
     </>

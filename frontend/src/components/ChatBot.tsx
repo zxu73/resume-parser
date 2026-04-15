@@ -6,6 +6,8 @@ interface ChatBotProps {
   resumeText: string;
   jobDescription: string;
   onAddSuggestion: (suggestion: ChatSuggestion) => void;
+  docId?: string;
+  onDocUpdated?: (newDocId: string) => void;
 }
 
 interface DisplayMessage {
@@ -14,7 +16,7 @@ interface DisplayMessage {
   suggestions?: ChatSuggestion[];
 }
 
-export const ChatBot: React.FC<ChatBotProps> = ({ resumeText, jobDescription, onAddSuggestion }) => {
+export const ChatBot: React.FC<ChatBotProps> = ({ resumeText, jobDescription, onAddSuggestion, docId, onDocUpdated }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<DisplayMessage[]>([
     {
@@ -25,6 +27,9 @@ export const ChatBot: React.FC<ChatBotProps> = ({ resumeText, jobDescription, on
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [addedSuggestions, setAddedSuggestions] = useState<Set<string>>(new Set());
+  const [appliedKeys, setAppliedKeys] = useState<Set<string>>(new Set());
+  const [skippedKeys, setSkippedKeys] = useState<Set<string>>(new Set());
+  const [applyingKey, setApplyingKey] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -97,6 +102,32 @@ export const ChatBot: React.FC<ChatBotProps> = ({ resumeText, jobDescription, on
     if (addedSuggestions.has(key)) return;
     setAddedSuggestions((prev) => new Set([...prev, key]));
     onAddSuggestion(suggestion);
+  };
+
+  const handleApprove = async (sug: ChatSuggestion) => {
+    const key = sug.current_text + sug.suggested_text;
+    if (!docId || appliedKeys.has(key) || applyingKey === key) return;
+    setApplyingKey(key);
+    try {
+      const res = await fetch('/apply-suggestions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          doc_id: docId,
+          replacements: [{ current_text: sug.current_text, suggested_text: sug.suggested_text }],
+        }),
+      });
+      if (!res.ok) throw new Error('Apply failed');
+      const data = await res.json();
+      if (data.success) {
+        setAppliedKeys((prev) => new Set([...prev, key]));
+        onDocUpdated?.(data.doc_id);
+      }
+    } catch {
+      // leave button in normal state so user can retry
+    } finally {
+      setApplyingKey(null);
+    }
   };
 
   return (
@@ -272,6 +303,54 @@ export const ChatBot: React.FC<ChatBotProps> = ({ resumeText, jobDescription, on
                           >
                             {alreadyAdded ? 'Added to Review ✓' : 'Add to Review'}
                           </button>
+
+                          {/* Approve / Skip — only when a live document is loaded */}
+                          {docId && (() => {
+                            const isApplied = appliedKeys.has(key);
+                            const isSkipped = skippedKeys.has(key);
+                            const isApplying = applyingKey === key;
+                            return (
+                              <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+                                <button
+                                  onClick={() => handleApprove(sug)}
+                                  disabled={isApplied || isSkipped || isApplying}
+                                  style={{
+                                    flex: 1,
+                                    padding: '6px 8px',
+                                    borderRadius: '6px',
+                                    border: 'none',
+                                    background: isApplied ? '#d1fae5' : '#16a34a',
+                                    color: isApplied ? '#065f46' : '#fff',
+                                    fontWeight: 600,
+                                    fontSize: '12px',
+                                    cursor: (isApplied || isSkipped || isApplying) ? 'default' : 'pointer',
+                                    transition: 'background 0.15s',
+                                    opacity: isSkipped ? 0.4 : 1,
+                                  }}
+                                >
+                                  {isApplying ? 'Applying…' : isApplied ? 'Applied ✓' : 'Approve'}
+                                </button>
+                                <button
+                                  onClick={() => setSkippedKeys((prev) => new Set([...prev, key]))}
+                                  disabled={isApplied || isSkipped}
+                                  style={{
+                                    flex: 1,
+                                    padding: '6px 8px',
+                                    borderRadius: '6px',
+                                    border: '1px solid #d1d5db',
+                                    background: isSkipped ? '#f3f4f6' : '#fff',
+                                    color: '#374151',
+                                    fontWeight: 600,
+                                    fontSize: '12px',
+                                    cursor: (isApplied || isSkipped) ? 'default' : 'pointer',
+                                    opacity: (isApplied || isSkipped) ? 0.5 : 1,
+                                  }}
+                                >
+                                  {isSkipped ? 'Skipped' : 'Skip'}
+                                </button>
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })}

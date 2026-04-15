@@ -756,6 +756,105 @@ class ModifyDocxRequest(BaseModel):
     replacements: list[TextReplacement]
 
 
+class ApplySuggestionsRequest(BaseModel):
+    doc_id: str
+    replacements: list[TextReplacement]
+
+
+@app.post("/apply-suggestions")
+async def apply_suggestions(request: ApplySuggestionsRequest):
+    """Apply approved text replacements to the stored Word document and save as a new snapshot.
+
+    Unlike /download-modified-docx, this endpoint does NOT stream a file download.
+    It writes the modified document back to disk under a fresh doc_id and returns
+    that id so the frontend can reload the live document viewer.
+    """
+    import re
+    from docx import Document as DocxDocument
+    import io
+
+    data = _load_doc(request.doc_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+
+    def norm(t: str) -> str:
+        return re.sub(r"\s+", " ", t).strip()
+
+    _BULLET_RE = re.compile(r"^[\s•·–—\u2013\u2014\u2022\u25aa\u25ba*○▪►◆▸\-]+")
+
+    def strip_bullet(t: str) -> str:
+        return _BULLET_RE.sub("", t).strip()
+
+    def para_full_text(para) -> str:
+        p_elem = para._element
+        return "".join(t.text or "" for t in p_elem.iter(f"{{{_W_NS}}}t"))
+
+    def write_para(para, new_text: str) -> None:
+        p_elem = para._element
+        all_t = list(p_elem.iter(f"{{{_W_NS}}}t"))
+        if not all_t:
+            return
+        all_t[0].text = new_text
+        all_t[0].set(_XML_SPACE, "preserve")
+        for t in all_t[1:]:
+            t.text = ""
+
+    def is_match(body: str, current: str) -> bool:
+        if current in body:
+            return True
+        anchor = current[:40]
+        if len(anchor) >= 20 and anchor in body:
+            return True
+        return False
+
+    def apply_replacement(paras: list, current: str, suggested: str) -> bool:
+        norm_current = strip_bullet(norm(current))
+        norm_suggested = strip_bullet(norm(suggested))
+        if not norm_current:
+            return False
+        for i, para in enumerate(paras):
+            body = strip_bullet(norm(para_full_text(para)))
+            if not body:
+                continue
+            if not is_match(body, norm_current):
+                continue
+            write_para(para, norm_suggested)
+            j = i + 1
+            while j < len(paras):
+                cont = strip_bullet(norm(para_full_text(paras[j])))
+                if len(cont) >= 8 and cont in norm_current:
+                    elem = paras[j]._element
+                    elem.getparent().remove(elem)
+                    j += 1
+                else:
+                    break
+            return True
+        return False
+
+    doc = DocxDocument(io.BytesIO(data))
+
+    for rep in request.replacements:
+        if apply_replacement(list(doc.paragraphs), rep.current_text, rep.suggested_text):
+            continue
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if apply_replacement(list(cell.paragraphs), rep.current_text, rep.suggested_text):
+                        break
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    new_bytes = buf.getvalue()
+
+    new_doc_id = f"edited_{uuid.uuid4().hex[:8]}"
+    _store_doc(new_doc_id, new_bytes)
+
+    return {"success": True, "doc_id": new_doc_id}
+
+
 @app.post("/download-modified-docx")
 async def download_modified_docx(request: ModifyDocxRequest):
     """Apply approved text replacements to the original Word document and return it."""
