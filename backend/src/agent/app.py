@@ -1073,9 +1073,9 @@ if frontend_dist_path.exists() and (frontend_dist_path / "index.html").exists():
                 "Expires": "0",
             },
         )
-    print(f"✅ Frontend mounted from: {frontend_dist_path}")
+    print(f"[OK] Frontend mounted from: {frontend_dist_path}")
 else:
-    print(f"⚠️ Frontend build not found at: {frontend_dist_path}")
+    print(f"[WARN] Frontend build not found at: {frontend_dist_path}")
     
     @app.get("/")
     async def root():

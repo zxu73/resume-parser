@@ -132,32 +132,76 @@ export const ChatBot: React.FC<ChatBotProps> = ({ resumeText, jobDescription, on
 
   return (
     <>
+      {/* Pulse ring animation */}
+      <style>{`
+        @keyframes chat-pulse {
+          0%   { transform: scale(1);   box-shadow: 0 0 0 0 rgba(37,99,235,0.55); }
+          70%  { transform: scale(1.05); box-shadow: 0 0 0 12px rgba(37,99,235,0); }
+          100% { transform: scale(1);   box-shadow: 0 0 0 0 rgba(37,99,235,0); }
+        }
+        .chat-fab { animation: chat-pulse 2.2s ease-out infinite; }
+        .chat-fab:hover { animation: none; transform: scale(1.08); }
+      `}</style>
+
       {/* Floating toggle button */}
-      <button
-        onClick={() => setIsOpen((o) => !o)}
+      <div
         style={{
           position: 'fixed',
           bottom: '24px',
           right: '24px',
           zIndex: 1000,
-          width: '56px',
-          height: '56px',
-          borderRadius: '50%',
-          background: isOpen ? '#374151' : '#2563eb',
-          color: '#fff',
-          border: 'none',
-          cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          boxShadow: '0 4px 14px rgba(0,0,0,0.25)',
-          fontSize: '22px',
-          transition: 'background 0.2s',
+          gap: '10px',
+          flexDirection: 'row-reverse',
         }}
-        title={isOpen ? 'Close chat' : 'Chat with AI'}
       >
-        {isOpen ? '✕' : '💬'}
-      </button>
+        <button
+          onClick={() => setIsOpen((o) => !o)}
+          className={isOpen ? undefined : 'chat-fab'}
+          style={{
+            width: '60px',
+            height: '60px',
+            borderRadius: '50%',
+            background: isOpen ? '#374151' : '#2563eb',
+            color: '#fff',
+            border: 'none',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 4px 18px rgba(37,99,235,0.45)',
+            fontSize: '24px',
+            transition: 'background 0.2s, transform 0.15s',
+            flexShrink: 0,
+          }}
+          title={isOpen ? 'Close chat' : 'Chat with AI'}
+        >
+          {isOpen ? '✕' : '💬'}
+        </button>
+
+        {/* Label pill — only shown when closed */}
+        {!isOpen && (
+          <div
+            onClick={() => setIsOpen(true)}
+            style={{
+              background: '#2563eb',
+              color: '#fff',
+              padding: '8px 14px',
+              borderRadius: '20px',
+              fontSize: '13px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              boxShadow: '0 4px 14px rgba(37,99,235,0.35)',
+              whiteSpace: 'nowrap',
+              lineHeight: 1.3,
+              userSelect: 'none',
+            }}
+          >
+            Ask AI to improve your resume
+          </div>
+        )}
+      </div>
 
       {/* Chat panel */}
       {isOpen && (

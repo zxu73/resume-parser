@@ -22,6 +22,8 @@ export default defineConfig({
       "/resume-doc": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/download-modified-pdf": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/download-modified-docx": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/chat": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/apply-suggestions": { target: "http://127.0.0.1:8000", changeOrigin: true },
     },
   },
 });
