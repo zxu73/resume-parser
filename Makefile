@@ -12,7 +12,7 @@ dev-frontend:
 
 dev-backend:
 	@echo "Starting backend development server..."
-	@cd backend && adk web
+	@cd backend && uvicorn src.agent.app:app --reload --host 0.0.0.0 --port 8000
 
 # Run frontend and backend concurrently
 dev:

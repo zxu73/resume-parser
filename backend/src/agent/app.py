@@ -1,39 +1,23 @@
 # mypy: disable - error - code = "no-untyped-def,misc"
 import os
 import pathlib
-from fastapi import FastAPI, Response, Request, File, UploadFile, HTTPException, Depends, status
+import asyncio
+import tempfile
+from fastapi import FastAPI, Response, Request, File, UploadFile, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from .agent import evaluation_agent, rating_agent, experience_optimizer_agent
+from .agent import evaluate_only_graph, rate_only_graph, optimizer_graph
 from .tools import analyze_resume_file
 import json
-import asyncio
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field, field_validator
-
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.genai import types   # ADK still needs genai types for Content/Part
-from typing import Dict, Any
 import uuid
 
-# --- ADK Setup ---
-# This follows the modern programmatic pattern for running an ADK agent.
-APP_NAME = "resume-optimizer-app"
-
-# 1. Set up session management
-session_service = InMemorySessionService()
-
-# 2. Create separate runners for all agents
-evaluation_runner = Runner(agent=evaluation_agent, app_name=APP_NAME, session_service=session_service)
-rating_runner = Runner(agent=rating_agent, app_name=APP_NAME, session_service=session_service)
-optimizer_runner = Runner(agent=experience_optimizer_agent, app_name=APP_NAME, session_service=session_service)
-
-# Store resume analysis results temporarily
-resume_analyses: Dict[str, Dict[str, Any]] = {}
+# Timeouts (seconds) — protect against hung upstream LLM calls
+_GRAPH_TIMEOUT = 120.0
+_CHAT_TIMEOUT = 30.0
 
 # Store uploaded files on disk so they survive hot-reloads and server restarts
-import tempfile, os as _os
 _STORE_DIR = pathlib.Path(tempfile.gettempdir()) / "resume_parser_files"
 _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -62,8 +46,6 @@ def _load_pdf(file_id: str) -> bytes | None:
 def _load_doc(file_id: str) -> bytes | None:
     p = _doc_path(file_id)
     return p.read_bytes() if p.exists() else None
-
-# --- End ADK Setup ---
 
 # Pydantic models for request/response
 class ResumeEvaluationRequest(BaseModel):
@@ -114,21 +96,89 @@ class ChatRequest(BaseModel):
     resume_text: str
     job_description: str
 
+
+# === JOB SEARCH + AUTO-APPLY MODELS ===
+
+class JobListing(BaseModel):
+    job_id: str
+    job_title: str
+    employer_name: str
+    job_city: str
+    job_state: str
+    job_apply_link: str
+    job_description_snippet: str
+    job_salary_min: float | None = None
+    job_salary_max: float | None = None
+    is_greenhouse: bool
+    gh_board_token: str | None = None
+    gh_job_id: str | None = None
+
+
+class JobSearchRequest(BaseModel):
+    job_description: str = Field(max_length=50000)
+    location: str = Field(default="", max_length=200)
+
+    @field_validator('job_description')
+    @classmethod
+    def job_desc_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError('must not be empty or whitespace-only')
+        return v
+
+
+class JobSearchResponse(BaseModel):
+    success: bool
+    jobs: list[JobListing]
+    query_used: str
+
+
+class ApplicantProfile(BaseModel):
+    first_name: str = Field(max_length=100)
+    last_name: str = Field(max_length=100)
+    email: str = Field(max_length=254)
+    phone: str = Field(max_length=30)
+    linkedin_url: str = Field(default="", max_length=500)
+
+
+class AutoApplyRequest(BaseModel):
+    doc_id: str
+    gh_board_token: str
+    gh_job_id: str
+    applicant: ApplicantProfile
+    cover_letter: str = Field(default="", max_length=5000)
+
+
+class AutoApplyResponse(BaseModel):
+    success: bool
+    status: str
+    message: str
+    application_id: str | None = None
+
+
+import re as _gh_re
+
+
+def _parse_greenhouse_url(url: str) -> tuple[str, str] | None:
+    """Extract (board_token, job_id) from a Greenhouse job URL, or return None."""
+    m = _gh_re.search(r'greenhouse\.io/([^/?\s]+)/jobs/(\d+)', url)
+    return (m.group(1), m.group(2)) if m else None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    # No cleanup needed for in-memory session service
 
 
 # Define the FastAPI app
-app = FastAPI(lifespan=lifespan, title="Resume Optimizer API", description="AI-powered resume optimization using Gemini")
+app = FastAPI(lifespan=lifespan, title="Resume Optimizer API", description="AI-powered resume optimization")
 
 
-# Add CORS middleware for frontend development
+# Add CORS middleware for frontend development.
+# allow_credentials must be False when using wildcard origins — browsers reject "*" + credentials.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for production deployment
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -167,15 +217,8 @@ async def upload_resume(file: UploadFile = File(...)):
         
         if not analysis_result.get("success"):
             raise HTTPException(status_code=500, detail=analysis_result.get("error", "Resume analysis failed"))
-        
-        # Store analysis with unique ID
+
         analysis_id = str(uuid.uuid4())
-        resume_analyses[analysis_id] = {
-            "analysis": analysis_result,
-            "filename": file.filename,
-            "file_size": len(content),
-            "file_type": file.content_type
-        }
 
         # Persist file to disk so it survives hot-reloads
         is_pdf = file.content_type == "application/pdf"
@@ -206,10 +249,10 @@ async def upload_resume(file: UploadFile = File(...)):
 
 @app.post("/evaluate-resume")
 async def evaluate_resume_directly(request: ResumeEvaluationRequest):
-    """
-    Evaluate, rate, and generate an improved resume using sequential agents.
-    Step 1: Evaluation agent analyzes the resume
-    Step 2: Rating agent provides scores and generates improved version
+    """Step 1: evaluate the resume and return clarifying questions.
+
+    Does NOT run the rewriter — the client should collect answers to
+    clarifying_questions and then POST to /finalize-analysis to get suggestions.
     """
     try:
         if not request.resume_text.strip():
@@ -218,42 +261,20 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
         if not request.job_description.strip():
             raise HTTPException(status_code=400, detail="Job description cannot be empty")
 
-        # ── Step 1: Evaluation Agent ─────────────────────────────────────
-        evaluation_prompt = f"""
-        RESUME:
-        {request.resume_text}
-
-        JOB DESCRIPTION:
-        {request.job_description}
-        """
-
-        evaluation_content = types.Content(
-            role="user", parts=[types.Part(text=evaluation_prompt)]
-        )
-
-        request_user_id = str(uuid.uuid4())
-        request_session_id = str(uuid.uuid4())
-        await session_service.create_session(
-            app_name=APP_NAME, user_id=request_user_id, session_id=request_session_id
-        )
-
-        evaluation_report = ""
-        async for event in evaluation_runner.run_async(
-            user_id=request_user_id, session_id=request_session_id, new_message=evaluation_content
-        ):
-            if event.content and event.content.parts:
-                evaluation_report += event.content.parts[0].text
-
-        print(f"DEBUG: Evaluation report: {len(evaluation_report)} chars")
-
         try:
-            evaluation_data = json.loads(evaluation_report)
-            print("DEBUG: Parsed evaluation JSON OK")
-        except json.JSONDecodeError as e:
-            print(f"DEBUG: Failed to parse evaluation JSON: {e}")
-            evaluation_data = {"raw_text": evaluation_report}
+            result = await asyncio.wait_for(
+                evaluate_only_graph.ainvoke({
+                    "resume_text": request.resume_text,
+                    "job_description": request.job_description,
+                }),
+                timeout=_GRAPH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Resume evaluation timed out")
 
-        # ── Override job_match_percentage with deterministic calculation ──
+        evaluation_data = result["evaluation"].model_dump()
+
+        # Deterministic job_match_percentage override.
         matching = evaluation_data.get("matching_skills", [])
         missing = evaluation_data.get("missing_skills", [])
         total_skills = len(matching) + len(missing)
@@ -261,133 +282,72 @@ async def evaluate_resume_directly(request: ResumeEvaluationRequest):
             round(len(matching) / total_skills * 100, 1) if total_skills > 0 else 0.0
         )
 
-        # ── Build structured context for rating agent ────────────────────
-        missing_skills: list = evaluation_data.get("missing_skills", [])
-
-        missing_block = "\n".join(
-            f"  {i+1}. {s}" for i, s in enumerate(missing_skills)
-        ) if missing_skills else "(none identified)"
-
-        # ── Step 2: Rating Agent ─────────────────────────────────────────
-        rating_prompt = f"""
-TASK: Visit every bullet in the resume. For each, decide: add missing keywords (Rule A),
-improve STAR format (Rule B), or skip.
-
-==================== JOB DESCRIPTION ====================
-{request.job_description}
-
-==================== ORIGINAL RESUME TEXT ====================
-Copy current_text from here EXACTLY — character-for-character.
-
-{request.resume_text}
-
-==================== MISSING JD KEYWORDS ====================
-{missing_block}
-
-==================== EVALUATION CONTEXT ====================
-Strengths: {json.dumps(evaluation_data.get("strengths", []))}
-Weaknesses: {json.dumps(evaluation_data.get("weaknesses", []))}
-
-INSTRUCTIONS:
-- Visit every bullet in the resume, one by one
-- If a missing skill can be plausibly added, rewrite in STAR format with the keyword → keyword_suggestions
-- If no keyword fits but the bullet can be improved (vague, weak verb, no result), rewrite in STAR format → star_suggestions
-- If neither, skip
-- current_text must be copied character-for-character from the resume
-- Each bullet appears in at most one section
-"""
-
-        rating_content = types.Content(
-            role="user", parts=[types.Part(text=rating_prompt)]
-        )
-
-        rating_results = ""
-        try:
-            async for event in rating_runner.run_async(
-                user_id=request_user_id, session_id=request_session_id, new_message=rating_content
-            ):
-                if event.content and event.content.parts:
-                    rating_results += event.content.parts[0].text
-        except Exception as e:
-            print(f"DEBUG: Rating stream error: {e}")
-
-        print(f"DEBUG: Rating results: {len(rating_results)} chars")
-
-        try:
-            rating_data = json.loads(rating_results)
-            print("DEBUG: Parsed rating JSON OK")
-        except json.JSONDecodeError as e:
-            print(f"DEBUG: Failed to parse rating JSON: {e}")
-            rating_data = {"raw_text": rating_results}
-
-        # ── Post-processing: sanitize keyword claims ────────────────
-        import re as _re
-
-        def _sanitize_rec(rec: dict) -> None:
-            """Clean up alignment_reason to remove claims about keywords not in suggested_text.
-            Does NOT modify keywords_added — section routing uses the original LLM-reported list."""
-            sug = rec.get("paraphrasing_suggestion")
-            if not sug:
-                return
-            suggested_lower = sug.get("suggested_text", "").lower()
-            original_kw = sug.get("keywords_added", [])
-            removed_kw = [kw for kw in original_kw if kw.lower() not in suggested_lower]
-            reason = sug.get("alignment_reason", "")
-            for kw in removed_kw:
-                reason = reason.replace(f"'{kw}'", "").replace(f'"{kw}"', "").replace(kw, "")
-            reason = _re.sub(r"\s*,\s*,", ",", reason)
-            reason = _re.sub(r"\s*and\s*and\s*", " and ", reason)
-            reason = _re.sub(r"\s{2,}", " ", reason).strip()
-            reason = _re.sub(r"^[,\s]+|[,\s]+$", "", reason)
-            sug["alignment_reason"] = reason
-            if removed_kw:
-                print(f"DEBUG: Cleaned alignment_reason for missing keywords {removed_kw} in '{rec.get('title', '')}'")
-
-        for rec in rating_data.get("keyword_suggestions", []):
-            _sanitize_rec(rec)
-        for rec in rating_data.get("star_suggestions", []):
-            _sanitize_rec(rec)
-
-        # ── Move keyword entries with empty keywords_added to star_suggestions
-        # Uses original LLM-reported keywords_added (not stripped) for routing.
-        # Only items where LLM itself said keywords_added=[] belong in star_suggestions.
-        real_keyword = []
-        for rec in rating_data.get("keyword_suggestions", []):
-            sug = rec.get("paraphrasing_suggestion", {})
-            if sug.get("keywords_added"):  # non-empty list = LLM claimed keyword insertion
-                real_keyword.append(rec)
-            else:
-                rating_data.setdefault("star_suggestions", []).append(rec)
-                print(f"DEBUG: Moved '{rec.get('title', '')}' to star_suggestions (LLM reported empty keywords_added)")
-        rating_data["keyword_suggestions"] = real_keyword
-
-        # ── Deduplicate: drop star entries whose bullet is already in keyword section
-        keyword_texts = {
-            rec.get("paraphrasing_suggestion", {}).get("current_text", "").strip()
-            for rec in rating_data.get("keyword_suggestions", [])
-        }
-        original_count = len(rating_data.get("star_suggestions", []))
-        rating_data["star_suggestions"] = [
-            rec for rec in rating_data.get("star_suggestions", [])
-            if rec.get("paraphrasing_suggestion", {}).get("current_text", "").strip()
-            not in keyword_texts
-        ]
-        removed = original_count - len(rating_data.get("star_suggestions", []))
-        if removed:
-            print(f"DEBUG: Removed {removed} overlapping star_suggestion(s)")
+        clarifying_questions = evaluation_data.pop("clarifying_questions", [])
 
         return {
             "success": True,
             "structured_evaluation": evaluation_data,
-            "structured_rating": rating_data,
-            "workflow_type": "sequential_evaluation_and_rating",
-            "message": "Resume evaluation and rating completed"
+            "clarifying_questions": clarifying_questions,
+            "workflow_type": "evaluation_with_questions",
+            "message": "Resume evaluated. Answer the clarifying questions to get tailored suggestions.",
         }
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Resume evaluation failed: {str(e)}")
+
+
+class FinalizeAnalysisRequest(BaseModel):
+    resume_text: str = Field(max_length=30000)
+    job_description: str = Field(max_length=50000)
+    evaluation: dict
+    answers: list[dict] = []  # [{"question": str, "answer": str}]
+
+    @field_validator('resume_text', 'job_description')
+    @classmethod
+    def not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError('must not be empty or whitespace-only')
+        return v
+
+
+@app.post("/finalize-analysis")
+async def finalize_analysis(request: FinalizeAnalysisRequest):
+    """Step 2: given the evaluation and user answers, produce keyword + STAR suggestions."""
+    try:
+        try:
+            result = await asyncio.wait_for(
+                rate_only_graph.ainvoke({
+                    "resume_text": request.resume_text,
+                    "job_description": request.job_description,
+                    "missing_skills": request.evaluation.get("missing_skills", []),
+                    "strengths": request.evaluation.get("strengths", []),
+                    "weaknesses": request.evaluation.get("weaknesses", []),
+                    "answers": request.answers,
+                }),
+                timeout=_GRAPH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Finalization timed out")
+
+        # Section invariants (non-empty keywords_added in keyword_suggestions,
+        # empty in star_suggestions, no bullet in both) are enforced by
+        # RatingResponse.normalize_sections at validation time.
+        rating_data = result["rating"].model_dump()
+
+        return {
+            "success": True,
+            "structured_evaluation": request.evaluation,
+            "structured_rating": rating_data,
+            "workflow_type": "finalized_with_answers",
+            "message": "Suggestions generated with user-provided context.",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Finalization failed: {str(e)}")
 
 @app.post("/analyze-experience-swaps")
 async def analyze_experience_swaps(request: SmartResumeRequest):
@@ -409,55 +369,19 @@ async def analyze_experience_swaps(request: SmartResumeRequest):
                 job_description=request.job_description
             ))
         
-        # Step 1: Run optimizer agent to compare and recommend swaps
-        optimizer_prompt = f"""
-        ORIGINAL RESUME:
-        {request.resume_text}
-
-        JOB DESCRIPTION:
-        {request.job_description}
-
-        POOL OF ADDITIONAL EXPERIENCES:
-        {json.dumps([{
-            'title': exp.title,
-            'company': exp.company,
-            'duration': exp.duration,
-            'description': exp.description,
-            'skills': exp.skills
-        } for exp in request.pool_experiences], indent=2)}
-
-        TASK:
-        1. Extract work experiences from the ORIGINAL RESUME
-        2. Score each resume experience's relevance to the job (0-100)
-        3. For each resume experience, find the best pool experience that could replace it
-        4. Score that pool experience's relevance (0-100)
-        5. Recommend replacement ONLY if pool experience is 20+ points better
-        6. Provide detailed reasoning for each decision
-
-        Remember: Be conservative. Only swap when significantly better.
-        """
-        
-        optimizer_content = types.Content(
-            role="user", parts=[types.Part(text=optimizer_prompt)]
-        )
-        
-        optimizer_user_id = str(uuid.uuid4())
-        optimizer_session_id = str(uuid.uuid4())
-        await session_service.create_session(
-            app_name=APP_NAME, user_id=optimizer_user_id, session_id=optimizer_session_id
-        )
-
-        optimization_result = ""
-        async for event in optimizer_runner.run_async(
-            user_id=optimizer_user_id, session_id=optimizer_session_id, new_message=optimizer_content
-        ):
-            if event.is_final_response() and event.content and event.content.parts:
-                optimization_result = event.content.parts[0].text
-        
         try:
-            optimization_data = json.loads(optimization_result)
-        except json.JSONDecodeError:
-            optimization_data = {"comparisons": [], "swaps_made": 0}
+            result = await asyncio.wait_for(
+                optimizer_graph.ainvoke({
+                    "resume_text": request.resume_text,
+                    "job_description": request.job_description,
+                    "pool_experiences": json.dumps([e.model_dump() for e in request.pool_experiences], indent=2),
+                }),
+                timeout=_GRAPH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Experience optimization timed out")
+
+        optimization_data = result["optimization"].model_dump()
         
         # Return recommendations for user review (don't apply yet)
         return {
@@ -979,6 +903,148 @@ async def download_modified_docx(request: ModifyDocxRequest):
     )
 
 
+# === JOB SEARCH + AUTO-APPLY ENDPOINTS ===
+
+@app.post("/job-search")
+async def job_search(request: JobSearchRequest):
+    """Search for matching jobs via JSearch API and detect Greenhouse postings."""
+    import httpx
+    import litellm as _litellm
+
+    # 1. Extract a concise search query from the job description
+    try:
+        qr = await _litellm.acompletion(
+            model=f"openai/{os.getenv('REASONING_MODEL', 'gpt-4o-mini')}",
+            messages=[
+                {"role": "system", "content": "Extract the job title and top 2 skills as a short search query (5 words max). Return only the query string, no explanation."},
+                {"role": "user", "content": request.job_description[:3000]},
+            ],
+            max_tokens=50,
+        )
+        query = (qr.choices[0].message.content or "").strip().strip('"').strip("'")
+        if not query:
+            raise ValueError("empty query")
+    except Exception:
+        query = request.job_description[:60].strip()
+
+    if request.location:
+        query = f"{query} {request.location}"
+
+    # 2. Call JSearch API
+    api_key = os.getenv("JSEARCH_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="JSEARCH_API_KEY not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://jsearch.p.rapidapi.com/search",
+                params={"query": query, "num_pages": "1", "date_posted": "all"},
+                headers={
+                    "X-RapidAPI-Key": api_key,
+                    "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
+                },
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Job search timed out")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Job search unavailable: {e}")
+
+    if resp.status_code == 429:
+        raise HTTPException(status_code=429, detail="Job search rate limit reached — try again later")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Job search service error: {resp.status_code}")
+
+    data = resp.json().get("data", [])
+
+    # 3. Build JobListing list with Greenhouse detection
+    jobs: list[JobListing] = []
+    for item in data:
+        apply_link = item.get("job_apply_link") or item.get("job_google_link") or ""
+        gh = _parse_greenhouse_url(apply_link)
+        jobs.append(JobListing(
+            job_id=item.get("job_id", str(uuid.uuid4())),
+            job_title=item.get("job_title", ""),
+            employer_name=item.get("employer_name", ""),
+            job_city=item.get("job_city") or "",
+            job_state=item.get("job_state") or "",
+            job_apply_link=apply_link,
+            job_description_snippet=(item.get("job_description") or "")[:300],
+            job_salary_min=item.get("job_min_salary"),
+            job_salary_max=item.get("job_max_salary"),
+            is_greenhouse=gh is not None,
+            gh_board_token=gh[0] if gh else None,
+            gh_job_id=gh[1] if gh else None,
+        ))
+
+    return JobSearchResponse(success=True, jobs=jobs, query_used=query)
+
+
+@app.post("/auto-apply")
+async def auto_apply(request: AutoApplyRequest):
+    """Submit a job application to Greenhouse via their Job Board API."""
+    import httpx
+
+    # 1. Load the resume docx from disk
+    data = _load_doc(request.doc_id)
+    if not data:
+        raise HTTPException(
+            status_code=404,
+            detail="Resume file expired — please re-download your resume and try again",
+        )
+
+    # 2. Build multipart form fields + resume file
+    form_data = {
+        "first_name": request.applicant.first_name,
+        "last_name": request.applicant.last_name,
+        "email": request.applicant.email,
+        "phone": request.applicant.phone,
+    }
+    if request.applicant.linkedin_url:
+        form_data["linkedin_profile"] = request.applicant.linkedin_url
+    if request.cover_letter:
+        form_data["cover_letter"] = request.cover_letter
+
+    files = {
+        "resume": (
+            "resume.docx",
+            data,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    }
+
+    # 3. POST to Greenhouse Job Board API
+    gh_url = f"https://boards-api.greenhouse.io/v1/boards/{request.gh_board_token}/jobs/{request.gh_job_id}"
+    api_key = os.getenv("GREENHOUSE_API_KEY", "")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                gh_url,
+                data=form_data,
+                files=files,
+                auth=(api_key, "") if api_key else None,
+            )
+    except httpx.TimeoutException:
+        return AutoApplyResponse(success=False, status="failed", message="Application submission timed out")
+    except httpx.RequestError as e:
+        return AutoApplyResponse(success=False, status="failed", message=f"Network error: {e}")
+
+    # 4. Parse Greenhouse response
+    try:
+        resp_json = resp.json()
+    except Exception:
+        resp_json = {}
+
+    if resp.status_code == 200:
+        app_id = str(resp_json.get("id", ""))
+        return AutoApplyResponse(success=True, status="applied", message="Application submitted successfully", application_id=app_id)
+
+    # Non-200: surface the error
+    error_detail = resp_json.get("message") or resp_json.get("error") or f"Greenhouse returned {resp.status_code}"
+    return AutoApplyResponse(success=False, status="failed", message=error_detail)
+
+
 # === CHATBOT ENDPOINT ===
 
 @app.post("/chat")
@@ -1024,11 +1090,15 @@ async def chat_endpoint(request: ChatRequest):
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": request.message})
 
-    response = await _litellm.acompletion(
-        model=f"openai/{os.getenv('REASONING_MODEL', 'gpt-4o-mini')}",
-        messages=messages,
-        response_format={"type": "json_object"},
-    )
+    try:
+        response = await _litellm.acompletion(
+            model=f"openai/{os.getenv('REASONING_MODEL', 'gpt-4o-mini')}",
+            messages=messages,
+            response_format={"type": "json_object"},
+            timeout=_CHAT_TIMEOUT,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=504, detail=f"Chat request failed: {e}")
 
     content = response.choices[0].message.content or "{}"
     try:

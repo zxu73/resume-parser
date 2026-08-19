@@ -16,6 +16,7 @@ export default defineConfig({
     proxy: {
       "/upload-resume": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/evaluate-resume": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/finalize-analysis": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/analyze-experience-swaps": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/apply-swaps-docx": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/resume-pdf": { target: "http://127.0.0.1:8000", changeOrigin: true },

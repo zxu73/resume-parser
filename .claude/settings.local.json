@@ -1,32 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run:*)",
-      "Bash(python -c \"import sys; sys.path.insert\\(0, 'src'\\); from src.agent.tools import extract_text_from_pdf, extract_text_from_docx; print\\('tools.py: OK'\\)\")",
-      "Bash(python -m py_compile src/agent/tools.py)",
-      "Bash(python -m py_compile src/agent/app.py)",
-      "Bash(npx tsc:*)",
-      "Bash(uv run python -c ':*)",
-      "Bash(node -e ':*)",
-      "Bash(npm run *)",
-      "Bash(echo \"Frontend PID: $!\")",
-      "Bash(curl -s http://127.0.0.1:8000/)",
-      "Bash(curl -s http://127.0.0.1:8000/docs)",
-      "Bash(curl -s http://127.0.0.1:8000/openapi.json)",
-      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m.upper\\(\\), p\\) for p,v in d['paths'].items\\(\\) for m in v]\")",
-      "Bash(python3 -)",
-      "Bash(curl -s -X POST http://127.0.0.1:8000/chat -H 'Content-Type: application/json' -d '{ *)",
-      "Bash(python3 -c ' *)",
-      "Bash(curl -s -X POST http://127.0.0.1:8000/apply-suggestions -H 'Content-Type: application/json' -d '{ *)",
-      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/evaluate-resume -H 'Content-Type: application/json' -d '{\"resume_text\": \"   \", \"job_description\": \"Some JD\"}')",
-      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/evaluate-resume -H 'Content-Type: application/json' -d '{\"resume_text\": \"My resume\", \"job_description\": \"\"}')",
-      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/upload-resume -F 'file=@C:/Users/Zicho/AppData/Local/Temp/test_resume/doc_id.txt;type=text/plain')",
-      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/apply-suggestions -H 'Content-Type: application/json' -d '{\"doc_id\": \"nonexistent\", \"replacements\": [{\"current_text\": \"x\", \"suggested_text\": \"y\"}]}')",
-      "Bash(curl -s -X POST http://127.0.0.1:8000/analyze-experience-swaps -H 'Content-Type: application/json' -d '{ *)",
-      "Bash(curl -s -X POST http://127.0.0.1:8000/apply-swaps-docx -H 'Content-Type: application/json' -d '{ *)",
-      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/chat -H 'Content-Type: application/json' -d '{\"message\": \"\", \"resume_text\": \"x\", \"job_description\": \"y\"}')",
-      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:5174/chat -H 'Content-Type: application/json' -d '{\"message\": \"hi\", \"resume_text\": \"Python dev\", \"job_description\": \"Python role\"}')",
-      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:5174/evaluate-resume -H 'Content-Type: application/json' -d '{\"resume_text\": \"Python dev\", \"job_description\": \"Python role\"}')"
+      "Bash",
+      "Edit",
+      "Write",
+      "WebSearch",
+      "PowerShell"
     ]
   }
 }

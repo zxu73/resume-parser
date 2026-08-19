@@ -41,6 +41,35 @@ export interface StructuredRating {
   star_suggestions: PriorityRecommendation[];
 }
 
+export interface ClarifyingQuestion {
+  id: string;
+  question: string;
+  skill_targeted: string;
+  /** Verbatim resume bullet this question is about; "" when unanchored. */
+  target_bullet: string;
+  /** Role/company heading the bullet sits under. */
+  target_experience: string;
+  question_type: 'multiple_choice' | 'free_text';
+  choices: string[];
+}
+
+export interface QuestionAnswer {
+  question: string;
+  answer: string;
+  /** Echoed back so the rewriter knows which skill was confirmed... */
+  skill_targeted: string;
+  /** ...and which bullet to rewrite with it. */
+  target_bullet: string;
+}
+
+export interface EvaluationResponse {
+  success: boolean;
+  structured_evaluation: StructuredEvaluation;
+  clarifying_questions: ClarifyingQuestion[];
+  workflow_type: string;
+  message: string;
+}
+
 export interface AnalysisResult {
   success: boolean;
   structured_evaluation?: StructuredEvaluation;

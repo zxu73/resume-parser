@@ -4,7 +4,13 @@ import { Textarea } from './components/ui/textarea';
 import { AnalysisDashboard } from './components/AnalysisDashboard';
 import { ExperienceManager, Experience } from './components/ExperienceManager';
 import { SwapReview } from './components/SwapReview';
-import { AnalysisResult } from './types/analysis';
+import { ClarifyingQuestions } from './components/ClarifyingQuestions';
+import {
+  AnalysisResult,
+  ClarifyingQuestion,
+  QuestionAnswer,
+  StructuredEvaluation,
+} from './types/analysis';
 import { useResumeUpload } from './hooks/useResumeUpload';
 import { useResumeEvaluation } from './hooks/useResumeEvaluation';
 import { useExperienceSwap, SwapItem } from './hooks/useExperienceSwap';
@@ -18,13 +24,15 @@ export default function App() {
   const [resumeText, setResumeText] = useState<string>('');
   const [docId, setDocId] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [pendingEvaluation, setPendingEvaluation] = useState<StructuredEvaluation | null>(null);
+  const [pendingQuestions, setPendingQuestions] = useState<ClarifyingQuestion[] | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { uploadResume } = useResumeUpload();
-  const { evaluateResume } = useResumeEvaluation();
+  const { evaluateResume, finalizeAnalysis } = useResumeEvaluation();
   const { analyzeSwaps, applySwaps } = useExperienceSwap();
 
   // File upload handler
@@ -70,11 +78,34 @@ export default function App() {
         const swapData = await analyzeSwaps(text, jobDescription, experiences);
         setSwapRecommendations(swapData.optimization_analysis);
       } else {
-        const result = await evaluateResume(text, jobDescription);
-        setAnalysisResult(result);
+        const evalRes = await evaluateResume(text, jobDescription);
+        setPendingEvaluation(evalRes.structured_evaluation);
+        setPendingQuestions(evalRes.clarifying_questions || []);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // Called by ClarifyingQuestions component with the collected answers (or [] on skip).
+  const handleAnswerSubmit = async (answers: QuestionAnswer[]) => {
+    if (!pendingEvaluation || !resumeText) return;
+    setIsAnalyzing(true);
+    setError(null);
+    try {
+      const result = await finalizeAnalysis(
+        resumeText,
+        jobDescription,
+        pendingEvaluation,
+        answers,
+      );
+      setAnalysisResult(result);
+      setPendingQuestions(null);
+      setPendingEvaluation(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Finalization failed');
     } finally {
       setIsAnalyzing(false);
     }
@@ -105,8 +136,9 @@ export default function App() {
       setDocId(newDocId);
       setResumeText(modifiedResumeText);
 
-      const result = await evaluateResume(modifiedResumeText, jobDescription);
-      setAnalysisResult(result);
+      const evalRes = await evaluateResume(modifiedResumeText, jobDescription);
+      setPendingEvaluation(evalRes.structured_evaluation);
+      setPendingQuestions(evalRes.clarifying_questions || []);
       setSwapRecommendations(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply swaps and analyze');
@@ -123,8 +155,9 @@ export default function App() {
     setError(null);
 
     try {
-      const result = await evaluateResume(resumeText, jobDescription);
-      setAnalysisResult(result);
+      const evalRes = await evaluateResume(resumeText, jobDescription);
+      setPendingEvaluation(evalRes.structured_evaluation);
+      setPendingQuestions(evalRes.clarifying_questions || []);
       setSwapRecommendations(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to analyze');
@@ -142,6 +175,8 @@ export default function App() {
     setResumeText('');
     setDocId(null);
     setAnalysisResult(null);
+    setPendingEvaluation(null);
+    setPendingQuestions(null);
     setIsAnalyzing(false);
     setError(null);
     if (fileInputRef.current) {
@@ -291,8 +326,21 @@ export default function App() {
         </div>
       )}
 
+      {/* Clarifying Questions (between evaluation and rating) */}
+      {pendingQuestions && !swapRecommendations && !analysisResult && (
+        <div>
+          <h2>4. Clarify Your Experience</h2>
+          <ClarifyingQuestions
+            questions={pendingQuestions}
+            onSubmit={handleAnswerSubmit}
+            onSkip={() => handleAnswerSubmit([])}
+            isSubmitting={isAnalyzing}
+          />
+        </div>
+      )}
+
       {/* Results */}
-      {analysisResult && !swapRecommendations && (
+      {analysisResult && !swapRecommendations && !pendingQuestions && (
         <div>
           <h2>4. Analysis Results</h2>
 

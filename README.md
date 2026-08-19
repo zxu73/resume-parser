@@ -45,7 +45,7 @@ flowchart TD
 |-------|------------|
 | Frontend | React 19, TypeScript, Vite, Tailwind CSS, Radix UI |
 | Backend | Python 3.11, FastAPI, Uvicorn |
-| AI | Google ADK agents, LiteLLM → OpenAI (`REASONING_MODEL`) |
+| AI | LangGraph + LangChain agents, LiteLLM → OpenAI (`REASONING_MODEL`) |
 | Documents | python-docx (Word), PyMuPDF (PDF) |
 | Package managers | uv (Python), npm (Node) |
 
@@ -107,13 +107,13 @@ make dev
 
 This starts:
 - **Frontend** at [http://localhost:5173](http://localhost:5173) — Vite dev server, proxies `/api` calls to the backend
-- **Backend** at [http://localhost:8000](http://localhost:8000) — Google ADK server
+- **Backend** at [http://localhost:8000](http://localhost:8000) — FastAPI (Uvicorn) server
 
 Or start them individually in separate terminals:
 
 ```bash
 # Terminal 1 — backend
-cd backend && adk web
+cd backend && uvicorn src.agent.app:app --reload --port 8000
 
 # Terminal 2 — frontend
 cd frontend && npm run dev
@@ -143,7 +143,7 @@ resume-parser/
 ├── backend/
 │   └── src/agent/
 │       ├── app.py          # FastAPI routes + post-processing
-│       ├── agent.py        # ADK agent definitions + Pydantic schemas
+│       ├── agent.py        # LangGraph graphs + node fns + Pydantic schemas
 │       ├── tools.py        # Resume extraction helpers
 │       └── guidelines.md   # Bullet-rewriting rules loaded into Rating Agent
 └── frontend/
